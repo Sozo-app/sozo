@@ -10,10 +10,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:soplay/core/aniyomi/aniyomi_channel.dart';
 import 'package:soplay/core/cloudstream/cloudstream_channel.dart';
+import 'package:soplay/core/bridge/bridge_control.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/aniyomi/presentation/pages/aniyomi_sources_page.dart';
 import 'package:soplay/core/manga/manga_channel.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/features/cloudflare/cloudflare_solver.dart';
 import 'package:soplay/features/manga/presentation/pages/manga_sources_page.dart';
 import 'package:soplay/features/cloudstream/presentation/pages/cloudstream_sources_page.dart';
@@ -1523,6 +1525,19 @@ class _WatchHistorySectionState extends State<_WatchHistorySection> {
                 ),
                 onTap: () => context.push('/downloads'),
               ),
+              const Divider(color: AppColors.divider, height: 1),
+              _Tile(
+                icon: Icons.devices_rounded,
+                title: BridgeControl.canHost
+                    ? 'Share sources to desktop'
+                    : 'Desktop sources',
+                trailing: const Icon(
+                  Icons.chevron_right_rounded,
+                  color: AppColors.textHint,
+                  size: 20,
+                ),
+                onTap: () => context.push('/desktop-share'),
+              ),
             ],
           ),
         ],
@@ -1620,7 +1635,7 @@ class _AboutSection extends StatelessWidget {
   }
 
   void _showDeveloper(BuildContext context) {
-    showModalBottomSheet<void>(
+    showAdaptiveModal<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppColors.surface,
@@ -1820,7 +1835,7 @@ class _SocialIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return HoverTap(
       onTap: onTap,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -2107,7 +2122,7 @@ class _ServerCountdownTileState extends State<_ServerCountdownTile> {
   }
 
   void _showSupportSheet(BuildContext context) {
-    showModalBottomSheet<void>(
+    showAdaptiveModal<void>(
       context: context,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(

@@ -10,7 +10,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:soplay/core/constants/app_constants.dart';
+import 'package:soplay/core/extensions/extension_bridge.dart';
+import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/deeplink/deeplink_service.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/js/js_runtime_service.dart';
@@ -24,6 +29,11 @@ import 'app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Desktop video playback (media_kit / libmpv). No-op / not called on mobile,
+  // which keeps using the native video_player backend.
+  if (isDesktopPlatform) {
+    MediaKit.ensureInitialized();
+  }
   try {
     await dotenv.load(fileName: '.env');
   } catch (_) {}
@@ -35,6 +45,11 @@ void main() async {
   PlatformInAppWebViewController.debugLoggingSettings.enabled = false;
   await _initFirebaseSafely();
   await configureDependencies();
+  // Desktop / iOS: route extension calls to the phone's shared bridge, using the
+  // link the user saved (phone + this device on the same Wi-Fi).
+  if (!Platform.isAndroid) {
+    ExtensionBridge.setUrl(getIt<HiveService>().getBridgeUrl());
+  }
   _fireAndForget(getIt<DownloadService>().resumeIncomplete(), 'download');
   _fireAndForget(getIt<ProviderRegistry>().preload(), 'providers');
   _fireAndForget(getIt<JsRuntimeService>().ensureReady(), 'js');
@@ -74,7 +89,15 @@ void main() async {
 }
 
 Future<void> _initHive() async {
-  await Hive.initFlutter();
+  if (isDesktopPlatform) {
+    // On Windows, getApplicationDocumentsDirectory() can resolve to a
+    // OneDrive-synced folder, which locks Hive's files mid-write (rename →
+    // "access denied"). Store boxes in the (non-synced) app support dir.
+    final dir = await getApplicationSupportDirectory();
+    Hive.init(dir.path);
+  } else {
+    await Hive.initFlutter();
+  }
   await Future.wait([
     Hive.openBox(AppConstants.authBox),
     Hive.openBox(AppConstants.settingsBox),

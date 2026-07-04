@@ -13,6 +13,7 @@ import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/player/local_hls_proxy.dart';
 import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/core/system/app_orientation.dart';
+import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/cloudflare/cloudflare_solver.dart';
 import 'package:soplay/features/detail/domain/entities/episode_entity.dart';
@@ -32,7 +33,7 @@ import 'package:soplay/features/download/domain/entities/download_item.dart';
 import 'package:soplay/features/history/data/history_service.dart';
 import 'package:soplay/features/history/domain/entities/history_item.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:video_player/video_player.dart';
+import 'package:soplay/core/player/media_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 part 'player_page.models.dart';
@@ -64,7 +65,7 @@ class _PlayerPageState extends State<PlayerPage>
   bool _resumeAfterPause = false;
   bool _lastPipPlaying = false;
 
-  VideoPlayerController? _controller;
+  PlayerController? _controller;
   late int _episodeIndex;
   String? _currentQuality;
   String? _videoUrl;
