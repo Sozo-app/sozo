@@ -61,8 +61,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      // Android-only distribution concerns: app-links opt-in and the
-      // (platform=android) version check don't apply on desktop.
       if (!isDesktopPlatform) {
         getIt<UpdateChecker>().run(context);
         DeeplinkOptIn.maybePrompt(context);
@@ -96,9 +94,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
     final newId = state.currentProviderId;
     if (_lastProviderId == null) {
       _lastProviderId = newId;
-      // First provider resolution (e.g. fresh install): the home tab already
-      // fired HomeLoad before any provider was selected, so it may have failed
-      // into the retry view. Reload it now that a default provider exists.
       if (context.read<HomeBloc>().state is! HomeLoaded) {
         context.read<HomeBloc>().add(HomeLoad(silent: true));
       }
@@ -173,21 +168,24 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver {
             setState(() => _index = 0);
             _navController.goTo(0);
           },
-          // Desktop (Windows/Linux/macOS): a side NavigationRail instead of a
-          // mobile bottom bar. Mobile keeps the original bottom navigation.
           child: isDesktopPlatform
               ? Scaffold(
                   backgroundColor: AppColors.background,
-                  body: Row(
+                  body: Stack(
                     children: [
-                      _SoplaySideRail(index: _index, onTap: _onTabTap),
-                      const VerticalDivider(
-                        width: 1,
-                        thickness: 1,
-                        color: Color(0x14FFFFFF),
-                      ),
-                      Expanded(
+                      Positioned.fill(
                         child: IndexedStack(index: _index, children: tabs),
+                      ),
+                      // Sozo-Desktop: floating bottom-center rounded pill nav
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 18),
+                          child: _SoplayFloatingNav(
+                            index: _index,
+                            onTap: _onTabTap,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -300,47 +298,112 @@ class _SoplayBottomNav extends StatelessWidget {
   }
 }
 
-/// Desktop side navigation — a [NavigationRail] mirroring the mobile bottom
-/// bar's destinations. Shown only on desktop platforms.
-class _SoplaySideRail extends StatelessWidget {
-  const _SoplaySideRail({required this.index, required this.onTap});
+/// Sozo-Desktop style floating bottom-center rounded pill navigation.
+/// Desktop only — mobile keeps [_SoplayBottomNav]. Reuses the same 5 tabs.
+class _SoplayFloatingNav extends StatelessWidget {
+  const _SoplayFloatingNav({required this.index, required this.onTap});
 
   final int index;
   final ValueChanged<int> onTap;
 
   @override
   Widget build(BuildContext context) {
-    return NavigationRail(
-      backgroundColor: const Color(0xFF0E0E0E),
-      selectedIndex: index,
-      onDestinationSelected: onTap,
-      labelType: NavigationRailLabelType.all,
-      groupAlignment: -0.85,
-      // Subtle neutral selection pill (not the red primary) that also doubles
-      // as a hover cue — NavigationRail destinations show a pointer cursor and
-      // hover highlight on desktop by default.
-      indicatorColor: Colors.white.withValues(alpha: 0.10),
-      selectedIconTheme: const IconThemeData(color: Colors.white, size: 26),
-      unselectedIconTheme:
-          const IconThemeData(color: Color(0xFF7A7A7A), size: 24),
-      selectedLabelTextStyle: const TextStyle(
-        color: Colors.white,
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
-      ),
-      unselectedLabelTextStyle: const TextStyle(
-        color: Color(0xFF7A7A7A),
-        fontSize: 11,
-        fontWeight: FontWeight.w500,
-      ),
-      destinations: [
-        for (final item in _SoplayBottomNav._items)
-          NavigationRailDestination(
-            icon: Icon(item.icon),
-            selectedIcon: Icon(item.activeIcon),
-            label: Text(item.labelKey.tr()),
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.navBackground,
+        borderRadius: BorderRadius.circular(9999),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 55,
+            offset: const Offset(0, 20),
           ),
-      ],
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.17),
+            blurRadius: 13,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (int i = 0; i < _SoplayBottomNav._items.length; i++)
+            _NavCircle(
+              item: _SoplayBottomNav._items[i],
+              selected: index == i,
+              onTap: () => onTap(i),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NavCircle extends StatefulWidget {
+  const _NavCircle({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _NavItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  State<_NavCircle> createState() => _NavCircleState();
+}
+
+class _NavCircleState extends State<_NavCircle> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = widget.selected;
+    final color = active
+        ? AppColors.primary
+        : (_hover ? AppColors.textPrimary : AppColors.textSecondary);
+
+    return Tooltip(
+      message: widget.item.labelKey.tr(),
+      preferBelow: false,
+      verticalOffset: 34,
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      textStyle: const TextStyle(color: AppColors.textPrimary, fontSize: 12),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedScale(
+            scale: _hover ? 1.2 : 1.0,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            child: Container(
+              width: 50,
+              height: 50,
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: active
+                    ? AppColors.primary.withValues(alpha: 0.14)
+                    : Colors.transparent,
+              ),
+              child: Icon(
+                active ? widget.item.activeIcon : widget.item.icon,
+                color: color,
+                size: 22,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -533,10 +596,10 @@ class _ShortsRefreshShowcaseCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Shorts refresh',
-                  style: TextStyle(
+                  'main.shorts_refresh_title'.tr(),
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
@@ -547,9 +610,9 @@ class _ShortsRefreshShowcaseCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          const Text(
-            "Double-click on the Shorts tab. The feed is refreshed and new videos are uploaded.",
-            style: TextStyle(
+          Text(
+            'main.shorts_refresh_body'.tr(),
+            style: const TextStyle(
               color: Colors.white70,
               fontSize: 13,
               fontWeight: FontWeight.w500,
@@ -565,9 +628,9 @@ class _ShortsRefreshShowcaseCard extends StatelessWidget {
                   color: Colors.white.withValues(alpha: 0.09),
                   borderRadius: BorderRadius.circular(999),
                 ),
-                child: const Text(
-                  'Double tap',
-                  style: TextStyle(
+                child: Text(
+                  'main.double_tap'.tr(),
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 11.5,
                     fontWeight: FontWeight.w800,
@@ -586,9 +649,9 @@ class _ShortsRefreshShowcaseCard extends StatelessWidget {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: const Text(
-                    'Okay',
-                    style: TextStyle(
+                  child: Text(
+                    'general.ok'.tr(),
+                    style: const TextStyle(
                       color: Colors.black,
                       fontSize: 12,
                       fontWeight: FontWeight.w800,

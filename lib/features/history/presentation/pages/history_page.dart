@@ -1,6 +1,8 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/detail/domain/entities/detail_args.dart';
 import 'package:soplay/features/history/data/history_service.dart';
@@ -43,23 +45,23 @@ class _HistoryPageState extends State<HistoryPage> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Clear History',
-          style: TextStyle(
+        title: Text(
+          'history.clear_title'.tr(),
+          style: const TextStyle(
             color: AppColors.textPrimary,
             fontWeight: FontWeight.w700,
           ),
         ),
-        content: const Text(
-          'Are you sure you want to clear your watch history?',
-          style: TextStyle(color: AppColors.textSecondary),
+        content: Text(
+          'history.clear_confirm'.tr(),
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: AppColors.textSecondary),
+            child: Text(
+              'general.cancel'.tr(),
+              style: const TextStyle(color: AppColors.textSecondary),
             ),
           ),
           TextButton(
@@ -67,9 +69,9 @@ class _HistoryPageState extends State<HistoryPage> {
               Navigator.of(ctx).pop();
               _historyService.clearAll();
             },
-            child: const Text(
-              'Clear',
-              style: TextStyle(
+            child: Text(
+              'history.clear'.tr(),
+              style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w700,
               ),
@@ -126,10 +128,10 @@ class _HistoryPageState extends State<HistoryPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Watch History',
-                      style: TextStyle(
+                      'profile.watch_history'.tr(),
+                      style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
@@ -148,9 +150,9 @@ class _HistoryPageState extends State<HistoryPage> {
                           color: AppColors.surface,
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: const Text(
-                          'Clear all',
-                          style: TextStyle(
+                        child: Text(
+                          'history.clear_all'.tr(),
+                          style: const TextStyle(
                             color: AppColors.primary,
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -212,21 +214,7 @@ class _HistoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Dismissible(
-      key: ValueKey(item.storageKey),
-      direction: DismissDirection.endToStart,
-      onDismissed: (_) => onDismissed(),
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 24),
-        color: AppColors.primary.withValues(alpha: 0.15),
-        child: const Icon(
-          Icons.delete_outline_rounded,
-          color: AppColors.primary,
-          size: 22,
-        ),
-      ),
-      child: InkWell(
+    final row = InkWell(
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -344,7 +332,38 @@ class _HistoryRow extends StatelessWidget {
             ],
           ),
         ),
+      );
+
+    if (isDesktopPlatform) {
+      return Row(
+        children: [
+          Expanded(child: row),
+          IconButton(
+            tooltip: 'history.remove'.tr(),
+            icon: const Icon(Icons.delete_outline_rounded,
+                color: AppColors.textHint),
+            onPressed: onDismissed,
+          ),
+          const SizedBox(width: 8),
+        ],
+      );
+    }
+
+    return Dismissible(
+      key: ValueKey(item.storageKey),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => onDismissed(),
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 24),
+        color: AppColors.primary.withValues(alpha: 0.15),
+        child: const Icon(
+          Icons.delete_outline_rounded,
+          color: AppColors.primary,
+          size: 22,
+        ),
       ),
+      child: row,
     );
   }
 
@@ -381,24 +400,25 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.history_rounded, color: AppColors.textHint, size: 52),
-          SizedBox(height: 14),
+          const Icon(Icons.history_rounded,
+              color: AppColors.textHint, size: 52),
+          const SizedBox(height: 14),
           Text(
-            'No watch history yet',
-            style: TextStyle(
+            'history.empty_title'.tr(),
+            style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 15,
               fontWeight: FontWeight.w600,
             ),
           ),
-          SizedBox(height: 4),
+          const SizedBox(height: 4),
           Text(
-            'Start watching to see your history here',
-            style: TextStyle(color: AppColors.textHint, fontSize: 13),
+            'history.empty_subtitle'.tr(),
+            style: const TextStyle(color: AppColors.textHint, fontSize: 13),
           ),
         ],
       ),

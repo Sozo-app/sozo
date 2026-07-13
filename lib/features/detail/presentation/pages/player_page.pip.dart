@@ -19,17 +19,22 @@ extension _PlayerPip on _PlayerPageState {
     if (action is! String) return;
     switch (action) {
       case 'play_pause':
+        if (_partyBlockLocal()) return;
         _togglePlay();
         _refreshPipActions();
       case 'rewind':
+        if (_partyBlockLocal()) return;
         _seekRelative(const Duration(seconds: -10));
       case 'forward':
+        if (_partyBlockLocal()) return;
         _seekRelative(const Duration(seconds: 10));
       case 'prev':
+        if (_partyBlockEpisodeNav()) return;
         if (widget.args.isSerial && _episodeIndex - 1 >= 0) {
           _loadEpisode(_episodeIndex - 1);
         }
       case 'next':
+        if (_partyBlockEpisodeNav()) return;
         if (widget.args.isSerial &&
             _episodeIndex + 1 < widget.args.episodes.length) {
           _loadEpisode(_episodeIndex + 1);
@@ -108,6 +113,10 @@ extension _PlayerPip on _PlayerPageState {
   }
 
   Future<void> _enterFullscreen() async {
+    if (isDesktopPlatform) {
+      await WakelockPlus.enable();
+      return;
+    }
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     try {
       await AppOrientation.set([
@@ -116,6 +125,13 @@ extension _PlayerPip on _PlayerPageState {
       ]);
     } catch (_) {}
     await WakelockPlus.enable();
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (!isDesktopPlatform) return;
+    final next = !_isFullscreen;
+    if (mounted) setState(() => _isFullscreen = next);
+    await DesktopWindow.setFullscreen(next);
   }
 
   Future<void> _toggleOrientation() async {
@@ -137,6 +153,16 @@ extension _PlayerPip on _PlayerPageState {
 
   Future<void> _restoreSystemUi() async {
     _isPortrait = false;
+    if (isDesktopPlatform) {
+      if (_isFullscreen) {
+        _isFullscreen = false;
+        await DesktopWindow.setFullscreen(false);
+      }
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+      return;
+    }
     try {
       await SystemChrome.setEnabledSystemUIMode(
         SystemUiMode.manual,

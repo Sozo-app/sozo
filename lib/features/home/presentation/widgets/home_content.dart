@@ -97,7 +97,6 @@ class _HomeContentState extends State<HomeContent> {
 
   void _handleScroll() {
     if (!_scrollController.hasClients) return;
-    // Blur starts after banner area (~250px) and completes by ~400px
     final next = ((_scrollController.offset - 250) / 150).clamp(0.0, 1.0);
     if ((next - _blurProgress.value).abs() < 0.02) return;
     _blurProgress.value = next;
@@ -224,7 +223,10 @@ class _HomeContentBody extends StatelessWidget {
                       ),
                   SliverToBoxAdapter(
                     child: SizedBox(
-                      height: MediaQuery.paddingOf(context).bottom + 16,
+                      // Desktop: clear the floating pill nav (~66px + 18 gap).
+                      height: isDesktopPlatform
+                          ? 100
+                          : MediaQuery.paddingOf(context).bottom + 16,
                     ),
                   ),
                 ],
@@ -271,7 +273,7 @@ class _GenreSection extends StatelessWidget {
             ),
           ),
           SizedBox(
-            height: 72,
+            height: isDesktopPlatform ? 90 : 72,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -320,19 +322,19 @@ class _TelegramPromoSheetState extends State<_TelegramPromoSheet> {
             child: const Icon(Icons.telegram, color: Colors.white, size: 32),
           ),
           const SizedBox(height: 14),
-          const Text(
-            'Join Sozo on Telegram',
-            style: TextStyle(
+          Text(
+            'home.telegram_promo_title'.tr(),
+            style: const TextStyle(
               color: AppColors.textPrimary,
               fontSize: 17,
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Get updates, new features, and content notifications.',
+          Text(
+            'home.telegram_promo_subtitle'.tr(),
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 13,
               height: 1.4,
@@ -352,14 +354,17 @@ class _TelegramPromoSheetState extends State<_TelegramPromoSheet> {
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.telegram, size: 20),
-                  SizedBox(width: 8),
+                  const Icon(Icons.telegram, size: 20),
+                  const SizedBox(width: 8),
                   Text(
-                    'Join Channel',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                    'home.telegram_join_channel'.tr(),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ],
               ),
@@ -398,9 +403,12 @@ class _TelegramPromoSheetState extends State<_TelegramPromoSheet> {
                       : null,
                 ),
                 const SizedBox(width: 8),
-                const Text(
-                  "Don't show again",
-                  style: TextStyle(color: AppColors.textHint, fontSize: 12),
+                Text(
+                  'home.dont_show_again'.tr(),
+                  style: const TextStyle(
+                    color: AppColors.textHint,
+                    fontSize: 12,
+                  ),
                 ),
               ],
             ),

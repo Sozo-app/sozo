@@ -114,6 +114,8 @@ extension _PlayerMedia on _PlayerPageState {
           type: value.type,
           resumeAt: resumeAt,
         );
+        // Host announces the new episode identity (never a video URL).
+        if (_errorMessage == null) _partyEmitContent(ep, _currentLang);
         if (subs.isNotEmpty) {
           final defaultIdx = subs.indexWhere((s) => s.isDefault);
           if (defaultIdx >= 0) {
@@ -191,11 +193,35 @@ extension _PlayerMedia on _PlayerPageState {
   }) async {
     if (_currentSourceIndex < 0 ||
         _currentSourceIndex >= _videoSources.length) {
+      _plog(
+        'local proxy skipped: no current source '
+        '(idx=$_currentSourceIndex, count=${_videoSources.length}) — direct URL',
+        level: LogLevel.warn,
+      );
       return null;
     }
     final source = _videoSources[_currentSourceIndex];
-    if (!source.useLocalProxy) return null;
-    if (source.videoUrl != url) return null;
+    if (!source.useLocalProxy) {
+      // If this fires for a uzmovi source, the backend flag or the
+      // localProxy/requestTransform maps were dropped somewhere between resolve
+      // and here — the player then hits the protected CDN directly and fails.
+      _plog(
+        'local proxy skipped: useLocalProxy=false '
+        '(transform=${source.requestTransform.isNotEmpty}, '
+        'localProxy=${source.localProxy.isNotEmpty}) — direct URL',
+        level: LogLevel.warn,
+      );
+      return null;
+    }
+    if (source.videoUrl != url) {
+      _plog(
+        'local proxy skipped: url mismatch — direct URL\n'
+        '  source.videoUrl=${source.videoUrl}\n'
+        '  play url       =$url',
+        level: LogLevel.warn,
+      );
+      return null;
+    }
     final upstreamHeaders = source.headers.isNotEmpty ? source.headers : headers;
     try {
       final proxied = await getIt<LocalHlsProxy>().register(
@@ -218,6 +244,7 @@ extension _PlayerMedia on _PlayerPageState {
     required Map<String, String> headers,
     required String? type,
     Duration resumeAt = Duration.zero,
+    PartyPlayback? party,
   }) async {
     if (url.isEmpty) {
       setState(() {
@@ -332,9 +359,6 @@ extension _PlayerMedia on _PlayerPageState {
         });
         return;
       }
-      // Live / IPTV detection: a live HLS has no real duration (it's a sliding
-      // window), so video_player reports zero or an absurd length. When live we
-      // skip resume-seeking and generated previews, which don't apply.
       final dur = controller.value.duration;
       _isLive = dur <= Duration.zero || dur.inHours >= 12;
       PlayerLog.instance.setContext({
@@ -342,12 +366,7 @@ extension _PlayerMedia on _PlayerPageState {
         'duration': _isLive ? 'live' : dur.toString(),
       });
       _plog('initialized — ${_isLive ? 'LIVE stream' : 'duration $dur'}');
-      // Warm the seek-preview generator so the very first scrub already has a
-      // frame ready. `_canGeneratePreview` already encodes the platform/HLS
-      // rules (Android skips HLS, iOS allows it). Live has no seekable window.
       if (_canGeneratePreview && !_isLive) {
-        // Warm at the resume position (or start) so the first scrub there is
-        // already decoded instead of cold-starting the codec on first drag.
         FramePreviewService.open(
           _videoUrl!,
           _headers,
@@ -356,11 +375,30 @@ extension _PlayerMedia on _PlayerPageState {
       }
       controller.addListener(_onMajorChange);
       await controller.setLooping(false);
-      await controller.setPlaybackSpeed(_playbackSpeed);
-      if (resumeAt > Duration.zero && !_isLive) {
-        await controller.seekTo(resumeAt);
+      if (party != null) {
+        // Watch2Gether: ignore the local resume point and align to the party.
+        if ((party.rate - _playbackSpeed).abs() > 0.01) {
+          _playbackSpeed = party.rate;
+        }
+        await controller.setPlaybackSpeed(_playbackSpeed);
+        if (!_isLive) {
+          final expected = party.expectedPositionAt(DateTime.now());
+          if (expected > 0) {
+            await controller.seekTo(
+              Duration(milliseconds: (expected * 1000).round()),
+            );
+          }
+        }
+        if (party.isPlaying) {
+          await controller.play();
+        }
+      } else {
+        await controller.setPlaybackSpeed(_playbackSpeed);
+        if (resumeAt > Duration.zero && !_isLive) {
+          await controller.seekTo(resumeAt);
+        }
+        await controller.play();
       }
-      await controller.play();
       _plog('play started — total ${stopwatch.elapsedMilliseconds}ms');
       setState(() {
         _initializing = false;
@@ -437,7 +475,6 @@ extension _PlayerMedia on _PlayerPageState {
 
   bool _isRecoverableError(String msg) {
     final l = msg.toLowerCase();
-    // Never retry format/config/404 errors — these will always fail
     if (l.contains('-12939') ||
         l.contains('-12938') ||
         l.contains('-12660') ||
@@ -515,7 +552,11 @@ extension _PlayerMedia on _PlayerPageState {
       final remaining = v.duration - v.position;
       final isEnding = remaining <= const Duration(seconds: 2);
       if (isEnding) {
-        if (widget.args.isSerial &&
+        // Guests in a party never self-advance — they wait for the host's
+        // next party:content. The host auto-advances and emits it.
+        final guestInParty = _inParty && !_isPartyHost;
+        if (!guestInParty &&
+            widget.args.isSerial &&
             _episodeIndex + 1 < widget.args.episodes.length) {
           _saveHistoryForNextEpisode();
           _loadEpisode(_episodeIndex + 1);

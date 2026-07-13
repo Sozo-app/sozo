@@ -7,6 +7,8 @@ class OnlineSubtitle {
     required this.display,
     required this.downloadCount,
     required this.hearingImpaired,
+    this.fileName = '',
+    this.format = '',
   });
 
   final String url;
@@ -14,10 +16,12 @@ class OnlineSubtitle {
   final String display;
   final int downloadCount;
   final bool hearingImpaired;
+
+  final String fileName;
+
+  final String format;
 }
 
-/// Online subtitle search. Resolves the title to an IMDB id via Cinemeta
-/// (Stremio metadata, keyless), then queries Wyzie Subs for direct .srt links.
 class OnlineSubtitlesService {
   OnlineSubtitlesService._();
 
@@ -28,7 +32,6 @@ class OnlineSubtitlesService {
     ),
   );
 
-  /// Title → IMDB id (e.g. "tt1375666"). Tries the movie or series catalog.
   static Future<String?> resolveImdbId({
     required String title,
     required bool series,
@@ -62,8 +65,6 @@ class OnlineSubtitlesService {
     var results = await _wyzie(wyzieKey, imdb,
         season: isSerial ? (season ?? 1) : null,
         episode: isSerial ? episode : null);
-    // Series episode filter sometimes returns nothing — fall back to the whole
-    // title so the user still gets options to pick from.
     if (results.isEmpty && isSerial) {
       results = await _wyzie(wyzieKey, imdb);
     }
@@ -82,18 +83,23 @@ class OnlineSubtitlesService {
     final res = await _dio.get('https://sub.wyzie.io/search',
         queryParameters: params);
     final data = res.data;
-    if (data is! List) return const []; // 400 body = no subtitles found
+    if (data is! List) return const [];
     final out = <OnlineSubtitle>[];
     for (final m in data) {
       if (m is! Map) continue;
       final url = '${m['url'] ?? ''}';
       if (url.isEmpty) continue;
+      final fileName =
+          '${m['media'] ?? m['fileName'] ?? m['release'] ?? m['source'] ?? m['title'] ?? ''}'
+              .trim();
       out.add(OnlineSubtitle(
         url: url,
         language: '${m['language'] ?? ''}'.toUpperCase(),
         display: '${m['display'] ?? m['language'] ?? 'Subtitle'}',
         downloadCount: (m['downloadCount'] as num?)?.toInt() ?? 0,
         hearingImpaired: m['isHearingImpaired'] == true,
+        fileName: fileName,
+        format: '${m['format'] ?? ''}'.toUpperCase(),
       ));
     }
     out.sort((a, b) => b.downloadCount.compareTo(a.downloadCount));

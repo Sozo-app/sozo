@@ -9,6 +9,7 @@ import 'package:soplay/core/js/provider_registry.dart';
 import 'package:soplay/core/extractor/extractor_runner.dart';
 import 'package:soplay/core/extractor/provider_manager.dart';
 import 'package:soplay/core/network/auth_interceptor.dart';
+import 'package:soplay/core/network/token_refresher.dart';
 import 'package:soplay/core/network/cf_bypass_interceptor.dart';
 import 'package:soplay/core/network/cf_bypass_service.dart';
 import 'package:soplay/core/network/dio_client.dart';
@@ -20,6 +21,8 @@ import 'package:soplay/core/player/webview_stream_extractor.dart';
 import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/features/streak/data/streak_remote_data_source.dart';
 import 'package:soplay/features/streak/data/streak_service.dart';
+import 'package:soplay/features/watch_party/data/watch_party_remote_data_source.dart';
+import 'package:soplay/features/watch_party/data/watch_party_service.dart';
 import 'package:soplay/features/download/data/download_service.dart';
 import 'package:soplay/features/history/data/history_service.dart';
 import 'package:soplay/features/auth/domain/usecases/register_usecase.dart';
@@ -125,9 +128,6 @@ Future<void> configureDependencies() async {
       },
     ),
   );
-  // Cloudflare 428 challenges are solved in a hidden WebView, cached
-  // server-side, and the original request is retried — all transparent
-  // to the rest of the app.
   getIt.registerSingleton<CfBypassService>(CfBypassService());
   dio.interceptors.add(
     CfBypassInterceptor(dio: dio, service: getIt<CfBypassService>()),
@@ -169,6 +169,19 @@ Future<void> configureDependencies() async {
     StreakService(
       remote: getIt<StreakRemoteDataSource>(),
       hive: getIt<HiveService>(),
+    ),
+  );
+  getIt.registerLazySingleton<TokenRefresher>(
+    () => TokenRefresher(getIt<HiveService>()),
+  );
+  getIt.registerSingleton<WatchPartyRemoteDataSource>(
+    WatchPartyRemoteDataSource(dio: getIt<Dio>()),
+  );
+  getIt.registerSingleton<WatchPartyService>(
+    WatchPartyService(
+      remote: getIt<WatchPartyRemoteDataSource>(),
+      hive: getIt<HiveService>(),
+      tokenRefresher: getIt<TokenRefresher>(),
     ),
   );
   getIt.registerLazySingleton<LocalHlsProxy>(

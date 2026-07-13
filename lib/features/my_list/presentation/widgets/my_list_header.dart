@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 
 class MyListHeader extends StatelessWidget {
@@ -9,10 +10,13 @@ class MyListHeader extends StatelessWidget {
     super.key,
     required this.topPad,
     required this.blurProgress,
+    this.onRefresh,
   });
 
   final double topPad;
   final double blurProgress;
+
+  final VoidCallback? onRefresh;
 
   static const double contentHeight = 58.0;
 
@@ -47,6 +51,11 @@ class MyListHeader extends StatelessWidget {
               ),
             ),
           ),
+          if (onRefresh != null)
+            DesktopRefreshButton(
+              color: AppColors.textSecondary,
+              onRefresh: onRefresh!,
+            ),
         ],
       ),
     );

@@ -11,6 +11,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/desktop_window.dart';
 import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/system/system_controls.dart';
 import 'package:soplay/features/detail/domain/usecases/get_pages_usecase.dart';
@@ -44,10 +45,9 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _localChapter = false;
   String? _error;
 
-  // 'vertical' (continuous webtoon) | 'horizontal' (paged)
   late String _mode;
   late bool _rtl;
-  late String _bgPref; // 'black' | 'gray' | 'white'
+  late String _bgPref;
   double _brightness = 0.5;
 
   Color get _backgroundColor => switch (_bgPref) {
@@ -56,19 +56,11 @@ class _ReaderPageState extends State<ReaderPage> {
         _ => const Color(0xFF0A0A0A),
       };
 
-  // Current page is a ValueNotifier so scrolling/paging only rebuilds the tiny
-  // page indicator + slider — NOT the whole reader (that was the main-thread jank).
   final ValueNotifier<int> _page = ValueNotifier<int>(0);
-  // In-progress seekbar drag target (null when not scrubbing). While dragging we
-  // only move the thumb + counter; the content jumps once on release — jumping a
-  // huge webtoon on every slider tick was the lag.
   final ValueNotifier<int?> _dragging = ValueNotifier<int?>(null);
   bool _showOverlay = true;
 
   PageController? _pageController;
-  // Vertical (webtoon) mode uses a positioned list so the current page can be
-  // read from the actually-rendered item positions (accurate with variable
-  // image heights + fast scroll), and seeking jumps to an exact page index.
   final ItemScrollController _itemScrollController = ItemScrollController();
   final ItemPositionsListener _itemPositionsListener =
       ItemPositionsListener.create();
@@ -88,7 +80,9 @@ class _ReaderPageState extends State<ReaderPage> {
     _rtl = _hive.getReaderRtl(widget.args.contentUrl);
     _bgPref = _hive.getReaderBackground();
     _itemPositionsListener.itemPositions.addListener(_onItemPositions);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    if (!isDesktopPlatform) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     _setWakelock(true);
     SystemControls.getBrightness().then((v) {
       if (mounted) setState(() => _brightness = v);
@@ -98,7 +92,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
   @override
   void dispose() {
-    _saveProgress(); // flush final position
+    _saveProgress();
     _saveDebounce?.cancel();
     _itemPositionsListener.itemPositions.removeListener(_onItemPositions);
     _pageController?.dispose();
@@ -131,7 +125,6 @@ class _ReaderPageState extends State<ReaderPage> {
     final ch = widget.args.chapters[index];
     final ref = ch.mediaRef;
 
-    // Prefer an already-downloaded copy of this chapter (offline first).
     final localId = DownloadService.mangaChapterId(
       contentUrl: widget.args.contentUrl,
       provider: widget.args.provider,
@@ -184,19 +177,12 @@ class _ReaderPageState extends State<ReaderPage> {
     }
   }
 
-  // ---- progress / page tracking ----
 
-  // The current page is the list item occupying the top of the viewport — read
-  // directly from the actually-rendered item positions. This is accurate with
-  // variable webtoon image heights and fast scrolling (a scroll-fraction
-  // estimate is not, which made the seekbar/counter jump around).
   void _onItemPositions() {
     if (_mode != 'vertical' || _pageCount == 0) return;
     final positions = _itemPositionsListener.itemPositions.value
         .where((p) => p.index < _pageCount && p.itemTrailingEdge > 0);
     if (positions.isEmpty) return;
-    // Prefer the page straddling the top edge (leadingEdge <= 0); else the first
-    // visible page.
     final straddling = positions.where((p) => p.itemLeadingEdge <= 0);
     final page = (straddling.isNotEmpty
             ? straddling.reduce(
@@ -205,7 +191,7 @@ class _ReaderPageState extends State<ReaderPage> {
                 (a, b) => a.itemLeadingEdge <= b.itemLeadingEdge ? a : b))
         .index;
     if (page != _page.value) {
-      _page.value = page; // notifier only — slider + counter rebuild, not the list
+      _page.value = page;
       _scheduleSave();
     }
   }
@@ -238,7 +224,6 @@ class _ReaderPageState extends State<ReaderPage> {
     ));
   }
 
-  // ---- navigation ----
 
   void _toggleOverlay() => setState(() => _showOverlay = !_showOverlay);
 
@@ -286,7 +271,6 @@ class _ReaderPageState extends State<ReaderPage> {
       _pageController?.dispose();
       _pageController = PageController(initialPage: page);
     } else {
-      // The freshly-built vertical list starts at the current page.
       _initialIndex = page;
     }
     setState(() => _mode = mode);
@@ -306,8 +290,6 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   void _handleTapZone(TapUpDetails d) {
-    // In continuous (webtoon) mode scrolling is the navigation, so any tap just
-    // toggles the overlay. Side tap-zones only make sense in paged mode.
     if (_mode == 'vertical') {
       _toggleOverlay();
       return;
@@ -323,18 +305,94 @@ class _ReaderPageState extends State<ReaderPage> {
     }
   }
 
-  // ---- UI ----
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: _backgroundColor,
       body: Stack(
         children: [
           Positioned.fill(child: _content()),
+          if (isDesktopPlatform &&
+              _showOverlay &&
+              !_loading &&
+              _error == null) ...[
+            _pageArrow(left: true),
+            _pageArrow(left: false),
+          ],
           if (_showOverlay) _topBar(),
+          if (isDesktopPlatform && !_showOverlay) _persistentClose(),
           if (_showOverlay && !_loading && _error == null) _bottomBar(),
         ],
+      ),
+    );
+    if (!isDesktopPlatform) return scaffold;
+    return Focus(autofocus: true, onKeyEvent: _onKey, child: scaffold);
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final k = event.logicalKey;
+    if (k == LogicalKeyboardKey.escape) {
+      if (context.canPop()) context.pop();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowRight ||
+        k == LogicalKeyboardKey.arrowDown ||
+        k == LogicalKeyboardKey.pageDown ||
+        k == LogicalKeyboardKey.space) {
+      _goNextPage();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowUp ||
+        k == LogicalKeyboardKey.pageUp) {
+      _goPrevPage();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.home) {
+      _goToPage(0);
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.end) {
+      _goToPage(_pageCount - 1);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Widget _pageArrow({required bool left}) {
+    return Align(
+      alignment: left ? Alignment.centerLeft : Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Material(
+          color: Colors.black.withValues(alpha: 0.35),
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: IconButton(
+            icon: Icon(left ? Icons.chevron_left : Icons.chevron_right,
+                color: Colors.white),
+            onPressed: left ? _goPrevPage : _goNextPage,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _persistentClose() {
+    return Positioned(
+      top: MediaQuery.paddingOf(context).top + 4,
+      left: 4,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.35),
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: IconButton(
+          tooltip: 'Close',
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => context.pop(),
+        ),
       ),
     );
   }
@@ -383,12 +441,10 @@ class _ReaderPageState extends State<ReaderPage> {
     return GestureDetector(
       onTapUp: _handleTapZone,
       child: ScrollablePositionedList.builder(
-        // Fresh list per chapter so initialScrollIndex (the resume page) applies.
         key: ValueKey('v_$_chapterIndex'),
         itemScrollController: _itemScrollController,
         itemPositionsListener: _itemPositionsListener,
         initialScrollIndex: _initialIndex.clamp(0, _pageCount),
-        // Render a screen ahead so the next strip is decoded before it scrolls in.
         minCacheExtent: 2000,
         itemCount: _pages.length + 1,
         itemBuilder: (context, i) {
@@ -412,7 +468,7 @@ class _ReaderPageState extends State<ReaderPage> {
           reverse: _rtl,
           itemCount: _pages.length,
           onPageChanged: (i) {
-            _page.value = i; // notifier only — no setState
+            _page.value = i;
             _scheduleSave();
           },
           itemBuilder: (context, i) => Center(
@@ -424,8 +480,6 @@ class _ReaderPageState extends State<ReaderPage> {
             ),
           ),
         ),
-        // Translucent tap layer so PageView still gets horizontal drags and
-        // InteractiveViewer still gets pinch gestures.
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -571,6 +625,16 @@ class _ReaderPageState extends State<ReaderPage> {
               icon: const Icon(Icons.tune, color: Colors.white),
               onPressed: _openSettingsSheet,
             ),
+            if (isDesktopPlatform)
+              ValueListenableBuilder<bool>(
+                valueListenable: DesktopWindow.immersive,
+                builder: (_, imm, _) => imm
+                    ? const Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: WindowButtons(),
+                      )
+                    : const SizedBox.shrink(),
+              ),
           ],
         ),
       ),
@@ -649,61 +713,87 @@ class _ReaderPageState extends State<ReaderPage> {
     _snack('manga.download_started'.tr());
   }
 
-  // ---- sheets ----
 
   void _openChapterList() {
+    Widget tile(int i) {
+      final ch = widget.args.chapters[i];
+      final selected = i == _chapterIndex;
+      return ListTile(
+        dense: true,
+        selected: selected,
+        selectedTileColor: _accent.withValues(alpha: 0.12),
+        leading: Icon(
+          selected ? Icons.play_arrow_rounded : Icons.menu_book_outlined,
+          color: selected ? _accent : Colors.white38,
+          size: 20,
+        ),
+        title: Text(ch.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: selected ? _accent : Colors.white, fontSize: 13.5)),
+        onTap: () {
+          Navigator.of(context).pop();
+          if (i != _chapterIndex) _loadChapter(i);
+        },
+      );
+    }
+
     showAdaptiveModal<void>(
       context: context,
       backgroundColor: const Color(0xFF161616),
       isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.7,
-        maxChildSize: 0.92,
-        builder: (context, scroll) => Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text('manga.chapters'.tr(),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600)),
+      showDragHandle: !isDesktopPlatform,
+      builder: (_) {
+        if (isDesktopPlatform) {
+          return SizedBox(
+            width: 360,
+            height: 480,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text('manga.chapters'.tr(),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: _chapters.length,
+                    itemBuilder: (context, i) => tile(i),
+                  ),
+                ),
+              ],
             ),
-            Expanded(
-              child: ListView.builder(
-                controller: scroll,
-                itemCount: _chapters.length,
-                itemBuilder: (context, i) {
-                  final ch = widget.args.chapters[i];
-                  final selected = i == _chapterIndex;
-                  return ListTile(
-                    dense: true,
-                    selected: selected,
-                    selectedTileColor: _accent.withValues(alpha: 0.12),
-                    leading: Icon(
-                      selected ? Icons.play_arrow_rounded : Icons.menu_book_outlined,
-                      color: selected ? _accent : Colors.white38,
-                      size: 20,
-                    ),
-                    title: Text(ch.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: selected ? _accent : Colors.white,
-                            fontSize: 13.5)),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      if (i != _chapterIndex) _loadChapter(i);
-                    },
-                  );
-                },
+          );
+        }
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.7,
+          maxChildSize: 0.92,
+          builder: (context, scroll) => Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('manga.chapters'.tr(),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600)),
               ),
-            ),
-          ],
-        ),
-      ),
+              Expanded(
+                child: ListView.builder(
+                  controller: scroll,
+                  itemCount: _chapters.length,
+                  itemBuilder: (context, i) => tile(i),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -768,27 +858,29 @@ class _ReaderPageState extends State<ReaderPage> {
                   setSheet(() {});
                 },
               ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  const Icon(Icons.brightness_6_outlined,
-                      color: Colors.white54, size: 18),
-                  Expanded(
-                    child: Slider(
-                      activeColor: _accent,
-                      inactiveColor: Colors.white24,
-                      min: 0.05,
-                      max: 1.0,
-                      value: _brightness.clamp(0.05, 1.0),
-                      onChanged: (v) {
-                        setSheet(() => _brightness = v);
-                        setState(() => _brightness = v);
-                        SystemControls.setBrightness(v);
-                      },
+              if (!isDesktopPlatform) ...[
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    const Icon(Icons.brightness_6_outlined,
+                        color: Colors.white54, size: 18),
+                    Expanded(
+                      child: Slider(
+                        activeColor: _accent,
+                        inactiveColor: Colors.white24,
+                        min: 0.05,
+                        max: 1.0,
+                        value: _brightness.clamp(0.05, 1.0),
+                        onChanged: (v) {
+                          setSheet(() => _brightness = v);
+                          setState(() => _brightness = v);
+                          SystemControls.setBrightness(v);
+                        },
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -866,7 +958,6 @@ class _ReaderPageState extends State<ReaderPage> {
               onPressed: hasPrevChapter ? _prevChapter : null,
             ),
             Expanded(
-              // Only this rebuilds as pages change / while scrubbing.
               child: ValueListenableBuilder<int?>(
                 valueListenable: _dragging,
                 builder: (context, drag, _) => ValueListenableBuilder<int>(
@@ -889,8 +980,6 @@ class _ReaderPageState extends State<ReaderPage> {
                               min: 0,
                               max: maxPage,
                               value: display.toDouble(),
-                              // Live: move thumb + counter only (cheap). The
-                              // content jumps once on release.
                               onChanged: _pageCount > 1
                                   ? (v) => _dragging.value = v.round()
                                   : null,
@@ -926,9 +1015,6 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 }
 
-/// A single page image. Decoded at screen width (`memCacheWidth`) so huge
-/// webtoon strips don't blow up memory or jank the main thread, with tap-to-retry
-/// on failure. Kept as its own widget so each image rebuilds independently.
 class _PageImage extends StatefulWidget {
   const _PageImage({
     super.key,
@@ -973,7 +1059,6 @@ class _PageImageState extends State<_PageImage> {
             httpHeaders: widget.headers,
             fit: BoxFit.fitWidth,
             width: width,
-            // Downscale to the screen's pixel width — the key perf fix for tall strips.
             memCacheWidth: cacheW,
             fadeInDuration: const Duration(milliseconds: 120),
             placeholder: (_, _) => Container(

@@ -184,9 +184,6 @@ class _DetailViewState extends State<_DetailView>
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _bodyPlayKey = GlobalKey();
 
-  // One-time coachmark teaching the long-press "move to private" gesture on the
-  // add button. Scoped per-instance so stacked detail pages never collide with
-  // each other (or with the global showcase used on the main page).
   final GlobalKey _listActionShowcaseKey = GlobalKey();
   late final String _showcaseScope = 'detail-private-${identityHashCode(this)}';
   ShowcaseView? _showcaseView;
@@ -235,9 +232,6 @@ class _DetailViewState extends State<_DetailView>
     _maybeShowPrivateShowcase();
   }
 
-  /// Shows the long-press coachmark exactly once, after the detail content (and
-  /// therefore the add button) has been laid out. No-op once dismissed/seen, or
-  /// when the detail never loads (this state only exists for [DetailLoaded]).
   void _maybeShowPrivateShowcase() {
     if (_privateShowcaseStarted ||
         getIt<HiveService>().hasSeenPrivateShowcase) {
@@ -249,8 +243,6 @@ class _DetailViewState extends State<_DetailView>
       Future<void>.delayed(const Duration(milliseconds: 600), () {
         if (!mounted) return;
         _showcaseView?.startShowCase([_listActionShowcaseKey]);
-        // One-time: mark seen the moment it appears so it never shows again,
-        // even if the user navigates away without tapping it.
         _markPrivateShowcaseSeen();
       });
     });
@@ -321,6 +313,14 @@ class _DetailViewState extends State<_DetailView>
     _showPill.dispose();
     super.dispose();
   }
+
+  String _tabLabel(String tab) => switch (tab) {
+    'Similar' => 'detail.similar'.tr(),
+    'Cast' => 'movie.cast'.tr(),
+    'Comments' => 'detail.comments'.tr(),
+    'Screenshots' => 'detail.screenshots'.tr(),
+    _ => tab,
+  };
 
   Widget _buildTabContent(DetailEntity detail) {
     final tab = _tabs[_tabController.index];
@@ -393,10 +393,7 @@ class _DetailViewState extends State<_DetailView>
         thumbnail: detail.thumbnail ?? '',
       ),
     );
-    // Pull it out of the normal list so private items never surface there, then
-    // reset the heart/add button to reflect that it's no longer in My List.
     await getIt<MyListLocalDataSource>().removeByUrl(detail.contentUrl);
-    // A private item must leave no history trail — drop any existing entries.
     await getIt<HistoryService>().removeByContentUrl(detail.contentUrl);
     if (!mounted) return;
     context.read<FavoriteBloc>().add(
@@ -409,8 +406,6 @@ class _DetailViewState extends State<_DetailView>
     _showSnack('app_lock.moved_to_private'.tr());
   }
 
-  /// Actions for an item that already lives in the private list (the add button
-  /// is showing the lock affordance). Mirrors the private-list page sheet.
   void _showPrivateActions() {
     showModalBottomSheet<void>(
       context: context,
@@ -516,7 +511,7 @@ class _DetailViewState extends State<_DetailView>
   void _handlePlayback(PlaybackEntity playback) {
     if (playback.isSerial) {
       if (playback.episodes.isEmpty) {
-        _showSnack('No episodes available');
+        _showSnack('detail.no_episodes'.tr());
         return;
       }
       context.push(
@@ -584,7 +579,7 @@ class _DetailViewState extends State<_DetailView>
       movieUrl = pickedUrl;
     }
     if (movieUrl == null || movieUrl.isEmpty) {
-      _showSnack('No playable source');
+      _showSnack('detail.no_playable_source'.tr());
       return;
     }
     Duration resumePos = Duration.zero;
@@ -601,6 +596,9 @@ class _DetailViewState extends State<_DetailView>
         contentUrl: widget.detail.contentUrl,
         thumbnail: widget.detail.thumbnail,
         movieUrl: movieUrl,
+        mediaRef: playback.episodes.isNotEmpty
+            ? playback.episodes.first.mediaRef
+            : null,
         type: playback.type,
         videoSources: playback.videoSources,
         resumePosition: resumePos,
@@ -610,20 +608,33 @@ class _DetailViewState extends State<_DetailView>
   }
 
   Future<void> _resolveAndPlayMovie(PlaybackEntity playback, String ref) async {
+    var dialogOpen = true;
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       barrierColor: Colors.black54,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      builder: (dctx) => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: AppColors.primary),
+            const SizedBox(height: 18),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop(),
+              child: Text('general.cancel'.tr(),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
+          ],
+        ),
       ),
-    );
+    ).whenComplete(() => dialogOpen = false);
 
     final result = await getIt<ResolveMediaUseCase>()(
       ref: ref,
       provider: playback.provider,
     );
     if (!mounted) return;
+    if (!dialogOpen) return;
     Navigator.of(context, rootNavigator: true).pop();
 
     switch (result) {
@@ -647,6 +658,7 @@ class _DetailViewState extends State<_DetailView>
             contentUrl: widget.detail.contentUrl,
             thumbnail: widget.detail.thumbnail,
             movieUrl: value.videoUrl,
+            mediaRef: ref,
             type: value.type,
             videoSources: value.videoSources,
             resumePosition: resumePos,
@@ -694,7 +706,9 @@ class _DetailViewState extends State<_DetailView>
           listener: (context, state) {
             if (state is FavoriteReady) {
               _showSnack(
-                state.isInList ? 'Added to My List' : 'Removed from My List',
+                state.isInList
+                    ? 'detail.added_to_my_list'.tr()
+                    : 'detail.removed_from_my_list'.tr(),
               );
             }
           },
@@ -763,7 +777,7 @@ class _DetailViewState extends State<_DetailView>
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.2,
                     ),
-                    tabs: _tabs.map((t) => Tab(text: t)).toList(),
+                    tabs: _tabs.map((t) => Tab(text: _tabLabel(t))).toList(),
                   ),
                 ),
               ),
@@ -1055,6 +1069,7 @@ class _CircleIconButton extends StatelessWidget {
     return HoverTap(
       onTap: onTap,
       onLongPress: onLongPress,
+      onSecondaryTap: onLongPress,
       child: ClipOval(
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
@@ -1104,9 +1119,9 @@ class _ActionPill extends StatelessWidget {
                   color: Colors.black,
                 ),
               const SizedBox(width: 4),
-              const Text(
-                'Play',
-                style: TextStyle(
+              Text(
+                'detail.play'.tr(),
+                style: const TextStyle(
                   color: Colors.black,
                   fontSize: 13,
                   fontWeight: FontWeight.w800,
@@ -1167,7 +1182,7 @@ class _BackOnlyBar extends StatelessWidget {
     return Positioned(
       top: topPad + 8,
       left: 8,
-      child: GestureDetector(
+      child: HoverTap(
         onTap: onBack,
         child: Container(
           width: 38,
@@ -1248,7 +1263,7 @@ class _ErrorView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 20),
-          ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+          ElevatedButton(onPressed: onRetry, child: Text('general.retry'.tr())),
           if (onSolveCloudflare != null) ...[
             const SizedBox(height: 12),
             OutlinedButton.icon(

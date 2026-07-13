@@ -12,10 +12,12 @@ import 'package:hive_flutter/adapters.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:soplay/core/constants/app_constants.dart';
 import 'package:soplay/core/extensions/extension_bridge.dart';
 import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/core/system/platform_utils.dart';
+import 'package:soplay/core/system/desktop_window.dart';
 import 'package:soplay/core/deeplink/deeplink_service.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/js/js_runtime_service.dart';
@@ -29,10 +31,9 @@ import 'app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Desktop video playback (media_kit / libmpv). No-op / not called on mobile,
-  // which keeps using the native video_player backend.
   if (isDesktopPlatform) {
     MediaKit.ensureInitialized();
+    await windowManager.ensureInitialized();
   }
   try {
     await dotenv.load(fileName: '.env');
@@ -41,12 +42,26 @@ void main() async {
     EasyLocalization.ensureInitialized(),
     _initHive(),
   ]);
+  if (isDesktopPlatform) {
+    final native = Hive.box(AppConstants.settingsBox)
+        .get('use_native_title_bar', defaultValue: false) == true;
+    try {
+      await windowManager.setTitleBarStyle(
+        native ? TitleBarStyle.normal : TitleBarStyle.hidden,
+        // macOS: keep the native traffic-light buttons visible in BOTH modes —
+        // in custom (hidden) mode they're the only window controls (our strip
+        // draws no buttons on macOS). On Windows/Linux the custom strip draws
+        // its own buttons, so hide the native ones when custom.
+        windowButtonVisibility: Platform.isMacOS ? true : native,
+      );
+      await windowManager.setMinimumSize(const Size(800, 560));
+    } catch (_) {}
+    DesktopWindow.nativeTitleBar.value = native;
+  }
 
   PlatformInAppWebViewController.debugLoggingSettings.enabled = false;
   await _initFirebaseSafely();
   await configureDependencies();
-  // Desktop / iOS: route extension calls to the phone's shared bridge, using the
-  // link the user saved (phone + this device on the same Wi-Fi).
   if (!Platform.isAndroid) {
     ExtensionBridge.setUrl(getIt<HiveService>().getBridgeUrl());
   }
@@ -64,9 +79,6 @@ void main() async {
       DeviceOrientation.portraitDown,
     ]).catchError((Object _) {}),
   );
-  // Baseline: system bars visible (non-fullscreen). The player enters immersive
-  // mode itself and restores to this on exit — so a missed restore (e.g. a crash
-  // in the player) can't leave the whole app stuck fullscreen.
   unawaited(
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
@@ -90,9 +102,6 @@ void main() async {
 
 Future<void> _initHive() async {
   if (isDesktopPlatform) {
-    // On Windows, getApplicationDocumentsDirectory() can resolve to a
-    // OneDrive-synced folder, which locks Hive's files mid-write (rename →
-    // "access denied"). Store boxes in the (non-synced) app support dir.
     final dir = await getApplicationSupportDirectory();
     Hive.init(dir.path);
   } else {

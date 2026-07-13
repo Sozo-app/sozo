@@ -1,8 +1,10 @@
 import 'dart:io';
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/detail/domain/entities/episode_entity.dart';
 import 'package:soplay/features/detail/domain/entities/player_args.dart';
@@ -46,9 +48,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Delete all downloads?',
-          style: TextStyle(
+        title: Text(
+          'downloads.delete_all_title'.tr(),
+          style: const TextStyle(
             color: AppColors.textPrimary,
             fontWeight: FontWeight.w700,
           ),
@@ -56,9 +58,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: AppColors.textSecondary),
+            child: Text(
+              'general.cancel'.tr(),
+              style: const TextStyle(color: AppColors.textSecondary),
             ),
           ),
           TextButton(
@@ -66,9 +68,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
               Navigator.of(ctx).pop();
               _service.clearAll();
             },
-            child: const Text(
-              'Delete',
-              style: TextStyle(
+            child: Text(
+              'general.delete'.tr(),
+              style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w700,
               ),
@@ -124,7 +126,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (!file.existsSync()) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('File not found')));
+      ).showSnackBar(SnackBar(content: Text('downloads.file_not_found'.tr())));
       return;
     }
     context.push(
@@ -180,10 +182,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Downloads',
-                      style: TextStyle(
+                      'navigation.downloads'.tr(),
+                      style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
@@ -202,9 +204,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                           color: AppColors.surface,
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: const Text(
-                          'Clear all',
-                          style: TextStyle(
+                        child: Text(
+                          'downloads.clear_all'.tr(),
+                          style: const TextStyle(
                             color: AppColors.primary,
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -259,21 +261,7 @@ class _DownloadRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Dismissible(
-      key: ValueKey(item.id),
-      direction: DismissDirection.endToStart,
-      onDismissed: (_) => onRemove(),
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 24),
-        color: AppColors.primary.withValues(alpha: 0.15),
-        child: const Icon(
-          Icons.delete_outline_rounded,
-          color: AppColors.primary,
-          size: 22,
-        ),
-      ),
-      child: InkWell(
+    final row = InkWell(
         onTap: item.status == DownloadStatus.completed ? onTap : null,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -356,12 +344,19 @@ class _DownloadRow extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         item.isManga
-                            ? '${item.downloadedBytes} / ${item.totalBytes} pages'
+                            ? 'manga.downloaded_pages'.tr(args: [
+                                '${item.downloadedBytes}',
+                                '${item.totalBytes}',
+                              ])
                             : _isHls(item.videoUrl)
-                            ? '${item.downloadedBytes} / ${item.totalBytes} segments'
+                            ? 'downloads.segments_progress'.tr(args: [
+                                '${item.downloadedBytes}',
+                                '${item.totalBytes}',
+                              ])
                             : item.totalBytes > 0
                             ? '${_mb(item.downloadedBytes)} / ${_mb(item.totalBytes)}'
-                            : '${_mb(item.downloadedBytes)} downloaded',
+                            : 'downloads.downloaded_amount'
+                                .tr(args: [_mb(item.downloadedBytes)]),
                         style: const TextStyle(
                           color: AppColors.textHint,
                           fontSize: 10,
@@ -370,10 +365,11 @@ class _DownloadRow extends StatelessWidget {
                     ] else if (item.status == DownloadStatus.completed)
                       Text(
                         item.isManga
-                            ? '${item.totalBytes} pages'
+                            ? 'downloads.pages_count'
+                                .tr(args: ['${item.totalBytes}'])
                             : item.totalBytes > 0
                             ? _mb(item.totalBytes)
-                            : 'Downloaded',
+                            : 'downloads.downloaded'.tr(),
                         style: const TextStyle(
                           color: AppColors.success,
                           fontSize: 11,
@@ -381,18 +377,18 @@ class _DownloadRow extends StatelessWidget {
                         ),
                       )
                     else if (item.status == DownloadStatus.failed)
-                      const Text(
-                        'Failed',
-                        style: TextStyle(
+                      Text(
+                        'downloads.failed'.tr(),
+                        style: const TextStyle(
                           color: AppColors.primary,
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
                         ),
                       )
                     else
-                      const Text(
-                        'Pending',
-                        style: TextStyle(
+                      Text(
+                        'downloads.pending'.tr(),
+                        style: const TextStyle(
                           color: AppColors.textHint,
                           fontSize: 11,
                         ),
@@ -435,7 +431,38 @@ class _DownloadRow extends StatelessWidget {
             ],
           ),
         ),
+      );
+
+    if (isDesktopPlatform) {
+      return Row(
+        children: [
+          Expanded(child: row),
+          IconButton(
+            tooltip: 'downloads.remove'.tr(),
+            icon: const Icon(Icons.delete_outline_rounded,
+                color: AppColors.textHint),
+            onPressed: onRemove,
+          ),
+          const SizedBox(width: 8),
+        ],
+      );
+    }
+
+    return Dismissible(
+      key: ValueKey(item.id),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => onRemove(),
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 24),
+        color: AppColors.primary.withValues(alpha: 0.15),
+        child: const Icon(
+          Icons.delete_outline_rounded,
+          color: AppColors.primary,
+          size: 22,
+        ),
       ),
+      child: row,
     );
   }
 
@@ -452,24 +479,25 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.download_rounded, color: AppColors.textHint, size: 52),
-          SizedBox(height: 14),
+          const Icon(Icons.download_rounded,
+              color: AppColors.textHint, size: 52),
+          const SizedBox(height: 14),
           Text(
-            'No downloads yet',
-            style: TextStyle(
+            'downloads.empty_title'.tr(),
+            style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 15,
               fontWeight: FontWeight.w600,
             ),
           ),
-          SizedBox(height: 4),
+          const SizedBox(height: 4),
           Text(
-            'Downloaded videos will appear here',
-            style: TextStyle(color: AppColors.textHint, fontSize: 13),
+            'downloads.empty_subtitle'.tr(),
+            style: const TextStyle(color: AppColors.textHint, fontSize: 13),
           ),
         ],
       ),

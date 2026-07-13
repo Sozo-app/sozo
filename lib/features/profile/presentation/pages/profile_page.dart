@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -15,6 +17,7 @@ import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/aniyomi/presentation/pages/aniyomi_sources_page.dart';
 import 'package:soplay/core/manga/manga_channel.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/desktop_window.dart';
 import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/features/cloudflare/cloudflare_solver.dart';
 import 'package:soplay/features/manga/presentation/pages/manga_sources_page.dart';
@@ -53,6 +56,9 @@ class _ProfileViewState extends State<_ProfileView> {
 
   static const double _headerContentHeight = 58.0;
 
+  // Desktop settings use a Sozo-Desktop style sidebar + panel layout.
+  int _navIndex = 0;
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +90,8 @@ class _ProfileViewState extends State<_ProfileView> {
 
   @override
   Widget build(BuildContext context) {
+    if (isDesktopPlatform) return _buildDesktop(context);
+
     final topPad = MediaQuery.paddingOf(context).top;
     final bottomPad = MediaQuery.paddingOf(context).bottom;
     final headerH = topPad + _headerContentHeight;
@@ -92,7 +100,6 @@ class _ProfileViewState extends State<_ProfileView> {
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
-          // Subtle gradient background
           const DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -104,7 +111,8 @@ class _ProfileViewState extends State<_ProfileView> {
             ),
             child: SizedBox.expand(),
           ),
-          RefreshIndicator(
+          _ProfileScrollFrame(
+            child: RefreshIndicator(
             onRefresh: _onRefresh,
             color: AppColors.primary,
             backgroundColor: AppColors.surface,
@@ -119,16 +127,20 @@ class _ProfileViewState extends State<_ProfileView> {
                     builder: (context, state) {
                       final user =
                           state is AuthLoaded ? state.token.user : null;
-                      return _ProfileHeader(user: user);
+                      return _Reveal(order: 0, child: _ProfileHeader(user: user));
                     },
                   ),
                 ),
                 const SliverToBoxAdapter(child: SizedBox(height: 20)),
-                const SliverToBoxAdapter(child: StreakCard()),
+                const SliverToBoxAdapter(
+                  child: _Reveal(order: 1, child: StreakCard()),
+                ),
                 const SliverToBoxAdapter(child: SizedBox(height: 16)),
-                const SliverToBoxAdapter(child: _ProvidersSection()),
+                const SliverToBoxAdapter(
+                  child: _Reveal(order: 2, child: _ProvidersSection()),
+                ),
                 const SliverToBoxAdapter(child: SizedBox(height: 16)),
-                if (CloudStreamChannel.isSupported) ...[
+                if (BridgeControl.canHost && CloudStreamChannel.isSupported) ...[
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -148,8 +160,8 @@ class _ProfileViewState extends State<_ProfileView> {
                                   color: AppColors.primary),
                             ),
                           ),
-                          title: const Text('CloudStream Sources',
-                              style: TextStyle(color: Colors.white)),
+                          title: Text('profile.cloudstream_sources'.tr(),
+                              style: const TextStyle(color: Colors.white)),
                           trailing: const Icon(Icons.chevron_right,
                               color: AppColors.textHint),
                           shape: RoundedRectangleBorder(
@@ -165,7 +177,7 @@ class _ProfileViewState extends State<_ProfileView> {
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 16)),
                 ],
-                if (AniyomiChannel.isSupported) ...[
+                if (BridgeControl.canHost && AniyomiChannel.isSupported) ...[
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -185,8 +197,8 @@ class _ProfileViewState extends State<_ProfileView> {
                                   color: AppColors.textHint),
                             ),
                           ),
-                          title: const Text('Aniyomi Sources',
-                              style: TextStyle(color: Colors.white)),
+                          title: Text('profile.aniyomi_sources'.tr(),
+                              style: const TextStyle(color: Colors.white)),
                           trailing: const Icon(Icons.chevron_right,
                               color: AppColors.textHint),
                           shape: RoundedRectangleBorder(
@@ -202,7 +214,7 @@ class _ProfileViewState extends State<_ProfileView> {
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 16)),
                 ],
-                if (MangaChannel.isSupported) ...[
+                if (BridgeControl.canHost && MangaChannel.isSupported) ...[
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -239,16 +251,32 @@ class _ProfileViewState extends State<_ProfileView> {
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 16)),
                 ],
-                const SliverToBoxAdapter(child: _WatchHistorySection()),
+                const SliverToBoxAdapter(
+                  child: _Reveal(order: 3, child: _WatchHistorySection()),
+                ),
                 const SliverToBoxAdapter(child: SizedBox(height: 16)),
-                const SliverToBoxAdapter(child: _SecuritySection()),
+                const SliverToBoxAdapter(
+                  child: _Reveal(order: 4, child: _SecuritySection()),
+                ),
                 const SliverToBoxAdapter(child: SizedBox(height: 16)),
-                const SliverToBoxAdapter(child: _AboutSection()),
-                SliverToBoxAdapter(child: SizedBox(height: bottomPad + 96)),
+                if (isDesktopPlatform) ...[
+                  const SliverToBoxAdapter(
+                    child: _Reveal(order: 5, child: _AppearanceSection()),
+                  ),
+                  const SliverToBoxAdapter(child: SizedBox(height: 16)),
+                ],
+                const SliverToBoxAdapter(
+                  child: _Reveal(order: 6, child: _AboutSection()),
+                ),
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: bottomPad + (isDesktopPlatform ? 112 : 96),
+                  ),
+                ),
               ],
             ),
           ),
-          // Blur header
+          ),
           Positioned(
             top: 0,
             left: 0,
@@ -257,6 +285,15 @@ class _ProfileViewState extends State<_ProfileView> {
               valueListenable: _headerBlur,
               builder: (_, blur, _) {
                 final progress = blur.clamp(0.0, 1.0);
+                final title = Text(
+                  'profile.title'.tr(),
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    height: 1.05,
+                  ),
+                );
                 final content = Container(
                   padding: EdgeInsets.fromLTRB(20, topPad + 14, 16, 14),
                   decoration: BoxDecoration(
@@ -272,15 +309,21 @@ class _ProfileViewState extends State<_ProfileView> {
                           )
                         : null,
                   ),
-                  child: const Text(
-                    'Profile',
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w900,
-                      height: 1.05,
-                    ),
-                  ),
+                  child: isDesktopPlatform
+                      ? Center(
+                          child: ConstrainedBox(
+                            constraints:
+                                const BoxConstraints(maxWidth: 760),
+                            child: Padding(
+                              padding: const EdgeInsets.only(left: 16),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: title,
+                              ),
+                            ),
+                          ),
+                        )
+                      : title,
                 );
                 if (progress < 0.01) return content;
                 return ClipRect(
@@ -296,6 +339,277 @@ class _ProfileViewState extends State<_ProfileView> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ── Desktop: Sozo-Desktop style sidebar + panel ───────────────────────────
+  static const _desktopNav = <(IconData, String)>[
+    (Icons.person_outline_rounded, 'Account'),
+    (Icons.dns_outlined, 'Providers'),
+    (Icons.history_rounded, 'Activity'),
+    (Icons.lock_outline_rounded, 'Security'),
+    (Icons.palette_outlined, 'Appearance'),
+    (Icons.info_outline_rounded, 'About'),
+  ];
+
+  Widget _buildDesktop(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SettingsSidebar(
+            items: _desktopNav,
+            index: _navIndex,
+            onTap: (i) => setState(() => _navIndex = i),
+          ),
+          const VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: Color(0x14FFFFFF),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(36, 34, 36, 120),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 240),
+                    switchInCurve: Curves.easeOutCubic,
+                    transitionBuilder: (child, anim) => FadeTransition(
+                      opacity: anim,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0, 0.03),
+                          end: Offset.zero,
+                        ).animate(anim),
+                        child: child,
+                      ),
+                    ),
+                    child: KeyedSubtree(
+                      key: ValueKey<int>(_navIndex),
+                      child: _desktopPanel(_navIndex),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _desktopPanel(int index) {
+    switch (index) {
+      case 0:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            BlocBuilder<AuthBloc, AuthState>(
+              builder: (context, state) {
+                final user = state is AuthLoaded ? state.token.user : null;
+                return _ProfileHeader(user: user);
+              },
+            ),
+            const SizedBox(height: 8),
+            const StreakCard(),
+          ],
+        );
+      case 1:
+        return const _ProvidersSection();
+      case 2:
+        return const _WatchHistorySection();
+      case 3:
+        return const _SecuritySection();
+      case 4:
+        return const _AppearanceSection();
+      default:
+        return const _AboutSection();
+    }
+  }
+}
+
+/// Sozo-Desktop style settings sidebar: fixed-width nav rail with a title and
+/// hoverable, active-tinted category items.
+class _SettingsSidebar extends StatelessWidget {
+  const _SettingsSidebar({
+    required this.items,
+    required this.index,
+    required this.onTap,
+  });
+
+  final List<(IconData, String)> items;
+  final int index;
+  final ValueChanged<int> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 236,
+      color: AppColors.navBackground,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 18),
+            child: Text(
+              'profile.title'.tr(),
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          for (int i = 0; i < items.length; i++)
+            _SettingsNavItem(
+              icon: items[i].$1,
+              label: items[i].$2,
+              active: index == i,
+              onTap: () => onTap(i),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsNavItem extends StatefulWidget {
+  const _SettingsNavItem({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  State<_SettingsNavItem> createState() => _SettingsNavItemState();
+}
+
+class _SettingsNavItemState extends State<_SettingsNavItem> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = widget.active;
+    final color = active
+        ? AppColors.primary
+        : (_hover ? AppColors.textPrimary : AppColors.textSecondary);
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: active
+                ? AppColors.primary.withValues(alpha: 0.12)
+                : (_hover
+                    ? Colors.white.withValues(alpha: 0.05)
+                    : Colors.transparent),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(widget.icon, color: color, size: 18),
+              const SizedBox(width: 12),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 14,
+                  fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Staggered fade + slide-up entrance for each settings section (desktop only,
+/// akuse-style). Mobile returns the child unchanged.
+class _Reveal extends StatefulWidget {
+  const _Reveal({required this.order, required this.child});
+  final int order;
+  final Widget child;
+
+  @override
+  State<_Reveal> createState() => _RevealState();
+}
+
+class _RevealState extends State<_Reveal>
+    with SingleTickerProviderStateMixin {
+  AnimationController? _c;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!isDesktopPlatform) return;
+    final c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 440),
+    );
+    _c = c;
+    _fade = CurvedAnimation(parent: c, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.06),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: c, curve: Curves.easeOutCubic));
+    Future.delayed(Duration(milliseconds: 45 * widget.order), () {
+      if (mounted) c.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _c?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _c;
+    if (c == null) return widget.child;
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(position: _slide, child: widget.child),
+    );
+  }
+}
+
+/// Centers the settings list to a readable column on desktop; full-width on
+/// mobile (unchanged).
+class _ProfileScrollFrame extends StatelessWidget {
+  const _ProfileScrollFrame({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isDesktopPlatform) return child;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: child,
       ),
     );
   }
@@ -364,22 +678,22 @@ class _GuestContent extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 14),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Sign in to your account',
-                      style: TextStyle(
+                      'profile.signin_account_title'.tr(),
+                      style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 17,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    SizedBox(height: 4),
+                    const SizedBox(height: 4),
                     Text(
-                      'Sign in to save your favorites and watch history.',
-                      style: TextStyle(
+                      'profile.signin_account_subtitle'.tr(),
+                      style: const TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12,
                         height: 1.4,
@@ -397,7 +711,7 @@ class _GuestContent extends StatelessWidget {
             child: ElevatedButton.icon(
               onPressed: onLogin,
               icon: const Icon(Icons.login_rounded, size: 18),
-              label: const Text('Sign In'),
+              label: Text('profile.sign_in'.tr()),
               style: ElevatedButton.styleFrom(
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -482,23 +796,23 @@ class _LogoutButton extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Sign Out',
-          style: TextStyle(
+        title: Text(
+          'profile.sign_out'.tr(),
+          style: const TextStyle(
             color: AppColors.textPrimary,
             fontWeight: FontWeight.w700,
           ),
         ),
-        content: const Text(
-          'Are you sure you want to sign out?',
-          style: TextStyle(color: AppColors.textSecondary),
+        content: Text(
+          'profile.sign_out_confirm'.tr(),
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: AppColors.textSecondary),
+            child: Text(
+              'general.cancel'.tr(),
+              style: const TextStyle(color: AppColors.textSecondary),
             ),
           ),
           TextButton(
@@ -506,9 +820,9 @@ class _LogoutButton extends StatelessWidget {
               Navigator.of(ctx).pop();
               context.read<AuthBloc>().add(const AuthLogoutRequested());
             },
-            child: const Text(
-              'Sign Out',
-              style: TextStyle(
+            child: Text(
+              'profile.sign_out'.tr(),
+              style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w700,
               ),
@@ -530,7 +844,7 @@ class _ProvidersSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionLabel('PROVIDERS'),
+          _SectionLabel('profile.section_providers'.tr()),
           const SizedBox(height: 8),
           BlocBuilder<ProviderBloc, ProviderState>(
             builder: (context, state) {
@@ -545,7 +859,7 @@ class _ProvidersSection extends StatelessWidget {
                 children: [
                   _Tile(
                     icon: Icons.movie_filter_outlined,
-                    title: 'Provider',
+                    title: 'profile.provider'.tr(),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -594,7 +908,6 @@ class _ProvidersSection extends StatelessWidget {
   }
 }
 
-/// Provider filter group: CloudStream first, otherwise by delivery mode.
 String providerGroup(ProviderEntity p) {
   if (p.category == 'cloudstream') return 'cloudstream';
   if (p.category == 'aniyomi') return 'aniyomi';
@@ -606,19 +919,12 @@ String providerGroup(ProviderEntity p) {
   };
 }
 
-/// Remembers the last-picked provider filter for the session so reopening the
-/// sheet keeps the same view.
 String _providerSheetFilter = 'all';
 
-/// Public entry point so other features (e.g. the home top bar quick-switch)
-/// can open the otherwise-private full provider picker.
 void openProviderPicker(BuildContext context, ProviderBloc bloc) {
   _ProvidersPage.open(context, bloc);
 }
 
-/// Full-screen provider picker (replaces the old bottom sheet) with a search box
-/// and the category filter. A page scrolls long lists (60+ CloudStream
-/// providers) far more comfortably than a draggable sheet.
 class _ProvidersPage extends StatefulWidget {
   const _ProvidersPage();
 
@@ -638,8 +944,6 @@ class _ProvidersPage extends StatefulWidget {
 }
 
 class _ProvidersPageState extends State<_ProvidersPage> {
-  // Filter group: 'favorites' | 'all' | 'cloud' | 'hybrid' | 'local' |
-  // 'cloudstream' | 'aniyomi' | 'manga'.
   late String _selectedCategory;
   final _searchController = TextEditingController();
   String _query = '';
@@ -648,8 +952,6 @@ class _ProvidersPageState extends State<_ProvidersPage> {
   @override
   void initState() {
     super.initState();
-    // Default to the Favorites view when the user has any starred providers,
-    // otherwise fall back to the remembered (or 'all') filter.
     final hasFavorites =
         getIt<HiveService>().getFavoriteProviders().isNotEmpty;
     var initial = _providerSheetFilter;
@@ -669,7 +971,6 @@ class _ProvidersPageState extends State<_ProvidersPage> {
   Future<void> _toggleFavorite(String id) async {
     await getIt<HiveService>().toggleFavoriteProvider(id);
     if (!mounted) return;
-    // Leaving the Favorites view empty is confusing — drop back to All.
     if (_selectedCategory == 'favorites' &&
         getIt<HiveService>().getFavoriteProviders().isEmpty) {
       _selectedCategory = 'all';
@@ -685,12 +986,10 @@ class _ProvidersPageState extends State<_ProvidersPage> {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.background,
-        // Kill the Material 3 scroll-under tint (it pulls the seed colour and
-        // looked red as content scrolled under the bar).
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         elevation: 0,
-        title: const Text('Choose Provider'),
+        title: Text('profile.choose_provider'.tr()),
         actions: [
           BlocBuilder<ProviderBloc, ProviderState>(
             builder: (context, state) => state is ProviderLoaded
@@ -701,7 +1000,7 @@ class _ProvidersPageState extends State<_ProvidersPage> {
                       selected: _selectedCategory,
                       onSelected: (cat) => setState(() {
                         _selectedCategory = cat;
-                        _providerSheetFilter = cat; // remember for next open
+                        _providerSheetFilter = cat;
                       }),
                     ),
                   )
@@ -711,8 +1010,6 @@ class _ProvidersPageState extends State<_ProvidersPage> {
       ),
       body: BlocBuilder<ProviderBloc, ProviderState>(
         builder: (context, state) {
-          // Filter once per build (was computed twice — count + list — over 300+
-          // providers each frame, the main source of the open jank).
           final filtered = state is ProviderLoaded
               ? _filteredProviders(state.providers)
               : const <ProviderEntity>[];
@@ -724,8 +1021,6 @@ class _ProvidersPageState extends State<_ProvidersPage> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
                 child: TextField(
                   controller: _searchController,
-                  // Debounce so each keystroke doesn't re-filter 300+ providers
-                  // and recompute the category counts on the whole tree.
                   onChanged: (v) {
                     _searchDebounce?.cancel();
                     _searchDebounce = Timer(
@@ -739,7 +1034,7 @@ class _ProvidersPageState extends State<_ProvidersPage> {
                   textInputAction: TextInputAction.search,
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: 'Search providers…',
+                    hintText: 'profile.search_providers_hint'.tr(),
                     hintStyle: const TextStyle(color: AppColors.textHint),
                     prefixIcon: const Icon(Icons.search,
                         color: AppColors.textHint, size: 20),
@@ -768,7 +1063,10 @@ class _ProvidersPageState extends State<_ProvidersPage> {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 16, 6),
                     child: Text(
-                      '${filtered.length} of ${state.providers.length} shown',
+                      'profile.count_of_total_shown'.tr(args: [
+                        '${filtered.length}',
+                        '${state.providers.length}'
+                      ]),
                       style: const TextStyle(
                           color: AppColors.textHint, fontSize: 12),
                     ),
@@ -800,12 +1098,8 @@ class _ProvidersPageState extends State<_ProvidersPage> {
   }
 
   List<ProviderEntity> _filteredProviders(List<ProviderEntity> all) {
-    // "All" excludes CloudStream (its own group). `repo:<name>` shows just one
-    // CloudStream repo's providers (their `description` carries the repo name).
-    // Otherwise match the delivery-mode group (cloud/hybrid/local) or cloudstream.
     Iterable<ProviderEntity> list;
     if (_selectedCategory == 'favorites') {
-      // Favorites span every group (cloud/hybrid/local/cloudstream/aniyomi/manga).
       final favs = getIt<HiveService>().getFavoriteProviders().toSet();
       list = all.where((p) => favs.contains(p.id));
     } else if (_selectedCategory == 'all') {
@@ -828,10 +1122,6 @@ class _ProvidersPageState extends State<_ProvidersPage> {
   }
 }
 
-/// Compact category filter dropdown shown in the providers sheet header.
-/// Defaults to "All"; opens a popup menu listing only categories that have
-/// at least one provider (preserving the canonical order tmdb → anime →
-/// movies → other).
 class _CategoryFilterButton extends StatelessWidget {
   const _CategoryFilterButton({
     required this.providers,
@@ -843,8 +1133,6 @@ class _CategoryFilterButton extends StatelessWidget {
   final String selected;
   final ValueChanged<String> onSelected;
 
-  // Filter groups: Favorites first (only shown when the user has starred any),
-  // then by delivery type (mode) plus CloudStream, per request.
   static const _canonicalOrder = [
     'favorites',
     'cloud',
@@ -866,11 +1154,9 @@ class _CategoryFilterButton extends StatelessWidget {
     'manga':      ('Manga',       Icons.menu_book_outlined),
   };
 
-  /// Display label for a group — localised for 'favorites', static otherwise.
   String _label(String key) =>
       key == 'favorites' ? 'profile.favorites'.tr() : (_meta[key]?.$1 ?? key);
 
-  /// Short, chip-friendly form of a repo name (drops the GitHub owner, trims).
   String _repoShort(String repo) {
     final seg = repo.contains('/') ? repo.split('/').last : repo;
     return seg.length > 18 ? '${seg.substring(0, 17)}…' : seg;
@@ -883,12 +1169,9 @@ class _CategoryFilterButton extends StatelessWidget {
       final g = providerGroup(p);
       counts[g] = (counts[g] ?? 0) + 1;
     }
-    // Favorites is a virtual group spanning every category; surface it only
-    // when the user has starred at least one provider that's still available.
     final favIds = getIt<HiveService>().getFavoriteProviders().toSet();
     final favoriteCount = providers.where((p) => favIds.contains(p.id)).length;
     if (favoriteCount > 0) counts['favorites'] = favoriteCount;
-    // Per-repo counts for CloudStream providers (their `description` = repo name).
     final repoCounts = <String, int>{};
     for (final p in providers) {
       if (providerGroup(p) != 'cloudstream') continue;
@@ -898,7 +1181,6 @@ class _CategoryFilterButton extends StatelessWidget {
     }
     final available = _canonicalOrder.where(counts.containsKey).toList();
     final repos = repoCounts.keys.toList()..sort();
-    // Nothing to filter when there's only one category and no repos.
     if (available.length < 2 && repos.isEmpty) return const SizedBox.shrink();
 
     final (String, IconData) selectedMeta = selected.startsWith('repo:')
@@ -916,13 +1198,12 @@ class _CategoryFilterButton extends StatelessWidget {
         final meta = _meta[cat] ?? (cat, Icons.label_outline);
         return (cat, _label(cat), meta.$2, counts[cat] ?? 0);
       }),
-      // One entry per CloudStream repo (e.g. "cs-kraptor", "…-phisher").
       ...repos.map((r) =>
           ('repo:$r', _repoShort(r), Icons.folder_outlined, repoCounts[r] ?? 0)),
     ];
 
     return PopupMenuButton<String>(
-      tooltip: 'Filter',
+      tooltip: 'search.filter'.tr(),
       offset: const Offset(0, 44),
       color: AppColors.surfaceVariant,
       elevation: 8,
@@ -1037,17 +1318,12 @@ class _ProvidersList extends StatefulWidget {
 }
 
 class _ProvidersListState extends State<_ProvidersList> {
-  // tile (~64) + separator (8); good enough to bring the selected row into view.
   static const double _estItemExtent = 72.0;
   late final ScrollController _controller;
 
   @override
   void initState() {
     super.initState();
-    // Open already positioned at the selected provider (via initialScrollOffset)
-    // instead of rendering at the top then post-frame jumping — that reposition
-    // was the visible "opens late then snaps" lag on the 300+ item list. Any
-    // overshoot past maxScrollExtent is clamped by the list on first layout.
     final i = widget.providers.indexWhere((p) => p.id == widget.currentProviderId);
     final offset = i > 2 ? (i * _estItemExtent - 80).clamp(0.0, double.infinity) : 0.0;
     _controller = ScrollController(initialScrollOffset: offset);
@@ -1065,10 +1341,6 @@ class _ProvidersListState extends State<_ProvidersList> {
       controller: _controller,
       padding: EdgeInsets.fromLTRB(16, 4, 16, widget.bottomPad + 16),
       addAutomaticKeepAlives: false,
-      // Fixed extent → the list computes any row's offset in O(1), so opening
-      // already-scrolled to a far-down selected provider is instant. A variable-
-      // extent (ListView.separated) list had to lay out EVERY row above the
-      // target to reach it — that was the ~2s open freeze on the 300+ list.
       itemExtent: _estItemExtent,
       itemCount: widget.providers.length,
       itemBuilder: (context, i) {
@@ -1109,9 +1381,9 @@ class _ProvidersEmpty extends StatelessWidget {
               color: AppColors.textHint.withValues(alpha: 0.7),
             ),
             const SizedBox(height: 12),
-            const Text(
-              'No providers in this category',
-              style: TextStyle(
+            Text(
+              'profile.no_providers_in_category'.tr(),
+              style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
@@ -1119,7 +1391,7 @@ class _ProvidersEmpty extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Try selecting "All" to see every provider',
+              'profile.try_select_all'.tr(),
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: AppColors.textHint.withValues(alpha: 0.85),
@@ -1148,8 +1420,6 @@ class _ProviderListTile extends StatelessWidget {
   final VoidCallback onToggleFavorite;
   final VoidCallback onTap;
 
-  // Only on-device extension providers (an:/mn:/cs:) sit behind a per-source
-  // Cloudflare challenge the interactive solver can pre-clear.
   bool get _canSolveCloudflare =>
       provider.id.startsWith('an:') ||
       provider.id.startsWith('mn:') ||
@@ -1186,6 +1456,8 @@ class _ProviderListTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress:
+              _canSolveCloudflare ? () => _solveCloudflare(context) : null,
+          onSecondaryTap:
               _canSolveCloudflare ? () => _solveCloudflare(context) : null,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -1324,15 +1596,12 @@ class _ProviderModeBadge extends StatelessWidget {
   }
 }
 
-/// Hint that the provider sits behind a Cloudflare challenge — the
-/// CfBypassInterceptor will silently solve it on first use, so the first call
-/// of the session may take a few extra seconds.
 class _CfBypassBadge extends StatelessWidget {
   const _CfBypassBadge();
 
   @override
   Widget build(BuildContext context) {
-    const color = Color(0xFFF38020); // Cloudflare orange
+    const color = Color(0xFFF38020);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
       decoration: BoxDecoration(
@@ -1360,13 +1629,12 @@ class _CfBypassBadge extends StatelessWidget {
   }
 }
 
-/// Small "18+" pill shown for providers flagged adult/NSFW by their repo.
 class _NsfwBadge extends StatelessWidget {
   const _NsfwBadge();
 
   @override
   Widget build(BuildContext context) {
-    const color = Color(0xFFE53935); // red
+    const color = Color(0xFFE53935);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
       decoration: BoxDecoration(
@@ -1417,12 +1685,13 @@ class _ProvidersError extends StatelessWidget {
             size: 36,
           ),
           const SizedBox(height: 10),
-          const Text(
-            'Failed to load providers.',
-            style: TextStyle(color: AppColors.textSecondary),
+          Text(
+            'profile.providers_error'.tr(),
+            style: const TextStyle(color: AppColors.textSecondary),
           ),
           const SizedBox(height: 14),
-          OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+          OutlinedButton(
+              onPressed: onRetry, child: Text('general.retry'.tr())),
         ],
       ),
     );
@@ -1472,13 +1741,13 @@ class _WatchHistorySectionState extends State<_WatchHistorySection> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionLabel('ACTIVITY'),
+          _SectionLabel('profile.section_activity'.tr()),
           const SizedBox(height: 8),
           _SectionCard(
             children: [
               _Tile(
                 icon: Icons.history_rounded,
-                title: 'Watch History',
+                title: 'profile.watch_history'.tr(),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1503,7 +1772,7 @@ class _WatchHistorySectionState extends State<_WatchHistorySection> {
               const Divider(color: AppColors.divider, height: 1),
               _Tile(
                 icon: Icons.download_rounded,
-                title: 'Downloads',
+                title: 'profile.downloads'.tr(),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1529,8 +1798,10 @@ class _WatchHistorySectionState extends State<_WatchHistorySection> {
               _Tile(
                 icon: Icons.devices_rounded,
                 title: BridgeControl.canHost
-                    ? 'Share sources to desktop'
-                    : 'Desktop sources',
+                    ? 'profile.share_sources_desktop'.tr()
+                    : Platform.isIOS
+                        ? 'ios.sources_title'.tr()
+                        : 'profile.desktop_sources'.tr(),
                 trailing: const Icon(
                   Icons.chevron_right_rounded,
                   color: AppColors.textHint,
@@ -1623,6 +1894,55 @@ class _SecuritySectionState extends State<_SecuritySection> {
   }
 }
 
+class _AppearanceSection extends StatefulWidget {
+  const _AppearanceSection();
+
+  @override
+  State<_AppearanceSection> createState() => _AppearanceSectionState();
+}
+
+class _AppearanceSectionState extends State<_AppearanceSection> {
+  late bool _native = getIt<HiveService>().useNativeTitleBar;
+
+  Future<void> _toggle(bool value) async {
+    setState(() => _native = value);
+    await getIt<HiveService>().setUseNativeTitleBar(value);
+    await DesktopWindow.setNativeTitleBar(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionLabel('profile.section_appearance'.tr()),
+          const SizedBox(height: 8),
+          _SectionCard(
+            children: [
+              SwitchListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                value: _native,
+                activeThumbColor: AppColors.primary,
+                secondary: const Icon(Icons.web_asset_rounded,
+                    color: AppColors.textSecondary),
+                title: Text('profile.native_window_bar'.tr(),
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontSize: 15)),
+                subtitle: Text('profile.native_window_bar_subtitle'.tr(),
+                    style: const TextStyle(
+                        color: AppColors.textHint, fontSize: 12)),
+                onChanged: _toggle,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _AboutSection extends StatelessWidget {
   const _AboutSection();
 
@@ -1692,9 +2012,9 @@ class _AboutSection extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 3),
-              const Text(
-                'Mobile Developer',
-                style: TextStyle(
+              Text(
+                'profile.developer_role'.tr(),
+                style: const TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: 12,
                 ),
@@ -1755,23 +2075,29 @@ class _AboutSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionLabel('ABOUT'),
+          _SectionLabel('profile.section_about'.tr()),
           const SizedBox(height: 8),
           _SectionCard(
             children: [
               _Tile(
                 icon: Icons.info_outline_rounded,
                 title: 'Sozo',
-                trailing: const Text(
-                  '1.0.0',
-                  style: TextStyle(color: AppColors.textHint, fontSize: 13),
+                trailing: FutureBuilder<PackageInfo>(
+                  future: PackageInfo.fromPlatform(),
+                  builder: (_, snap) => Text(
+                    snap.hasData
+                        ? 'v${snap.data!.version} (${snap.data!.buildNumber})'
+                        : '…',
+                    style: const TextStyle(
+                        color: AppColors.textHint, fontSize: 13),
+                  ),
                 ),
                 onTap: null,
               ),
               Divider(color: AppColors.divider, height: 1),
               _Tile(
                 icon: Icons.person_outline_rounded,
-                title: 'Developer',
+                title: 'profile.developer'.tr(),
                 trailing: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1796,7 +2122,7 @@ class _AboutSection extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.start,
             children: [
               _SocialIcon(
                 icon: Icons.telegram,
@@ -1806,7 +2132,7 @@ class _AboutSection extends StatelessWidget {
               const SizedBox(width: 16),
               _SocialIcon(
                 icon: Icons.language_rounded,
-                label: 'Website',
+                label: 'profile.website'.tr(),
                 onTap: () => _open('https://sozo.azamov.me'),
               ),
               const SizedBox(width: 16),
@@ -2035,9 +2361,6 @@ class _ProviderLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Decode at display size (× DPR), not full resolution. With 60+ provider
-    // tiles sharing the same icon URL this keeps the image cache tiny instead
-    // of holding dozens of full-res bitmaps (a major OOM/jank source).
     final cache = (size * MediaQuery.devicePixelRatioOf(context)).round();
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),
@@ -2048,9 +2371,6 @@ class _ProviderLogo extends StatelessWidget {
               width: size,
               height: size,
               fit: BoxFit.cover,
-              // Disk-cached + decoded at display size: with 280+ distinct source
-              // icons this avoids re-fetching every scroll/session and keeps the
-              // memory cache small (was a jank source on the Aniyomi list).
               memCacheWidth: cache,
               memCacheHeight: cache,
               fadeInDuration: const Duration(milliseconds: 120),
@@ -2087,7 +2407,6 @@ class _ProviderFallback extends StatelessWidget {
   }
 }
 
-// ─── Server Countdown Tile ──────────────────────────────────────
 
 class _ServerCountdownTile extends StatefulWidget {
   const _ServerCountdownTile();
@@ -2165,10 +2484,10 @@ class _ServerCountdownTileState extends State<_ServerCountdownTile> {
                 ),
               ),
               const SizedBox(width: 14),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Server',
-                  style: TextStyle(
+                  'profile.server'.tr(),
+                  style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 15,
                     fontWeight: FontWeight.w500,
@@ -2179,7 +2498,7 @@ class _ServerCountdownTileState extends State<_ServerCountdownTile> {
                 valueListenable: _remaining,
                 builder: (_, rem, _) {
                   return Text(
-                    rem == Duration.zero ? 'Expired' : _fmt(rem),
+                    rem == Duration.zero ? 'profile.expired'.tr() : _fmt(rem),
                     style: TextStyle(
                       color: rem == Duration.zero
                           ? AppColors.primary
@@ -2239,16 +2558,15 @@ class _ServerSupportSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          const Text(
-            'Keep Sozo Running',
-            style: TextStyle(
+          Text(
+            'profile.support_title'.tr(),
+            style: const TextStyle(
               color: AppColors.textPrimary,
               fontSize: 17,
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 16),
-          // Live countdown
           ValueListenableBuilder<Duration>(
             valueListenable: remaining,
             builder: (_, rem, _) {
@@ -2261,10 +2579,10 @@ class _ServerSupportSheet extends StatelessWidget {
                     color: AppColors.primary.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Text(
-                    'Server Expired',
+                  child: Text(
+                    'profile.server_expired'.tr(),
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: AppColors.primary,
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
@@ -2278,13 +2596,13 @@ class _ServerSupportSheet extends StatelessWidget {
               final s = rem.inSeconds.remainder(60);
               return Row(
                 children: [
-                  _SheetCountdownCell(value: d, label: 'Days'),
+                  _SheetCountdownCell(value: d, label: 'profile.days'.tr()),
                   const SizedBox(width: 8),
-                  _SheetCountdownCell(value: h, label: 'Hours'),
+                  _SheetCountdownCell(value: h, label: 'profile.hours'.tr()),
                   const SizedBox(width: 8),
-                  _SheetCountdownCell(value: m, label: 'Min'),
+                  _SheetCountdownCell(value: m, label: 'profile.min'.tr()),
                   const SizedBox(width: 8),
-                  _SheetCountdownCell(value: s, label: 'Sec'),
+                  _SheetCountdownCell(value: s, label: 'profile.sec'.tr()),
                 ],
               );
             },
@@ -2296,8 +2614,8 @@ class _ServerSupportSheet extends StatelessWidget {
               final expired = rem == Duration.zero;
               return Text(
                 expired
-                    ? 'The server has expired and content can no longer be loaded. Your support can help bring it back online.'
-                    : 'Sozo relies on a server that needs periodic renewal. If you enjoy using the app, your support helps keep everything running smoothly.',
+                    ? 'profile.support_body_expired'.tr()
+                    : 'profile.support_body'.tr(),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: AppColors.textSecondary,
@@ -2320,7 +2638,7 @@ class _ServerSupportSheet extends StatelessWidget {
                 );
               },
               icon: const Icon(Icons.favorite_rounded, size: 18),
-              label: const Text('Support the Developer'),
+              label: Text('profile.support_developer'.tr()),
             ),
           ),
         ],

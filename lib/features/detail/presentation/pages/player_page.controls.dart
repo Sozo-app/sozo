@@ -26,17 +26,44 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   void _togglePlay() {
+    if (_partyBlockLocal()) return;
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
-    if (c.value.isPlaying) {
+    final wasPlaying = c.value.isPlaying;
+    if (wasPlaying) {
       c.pause();
     } else {
       c.play();
       _scheduleHide();
     }
+    _partyEmit(
+      wasPlaying ? 'pause' : 'play',
+      positionSec: c.value.position.inMilliseconds / 1000.0,
+    );
+  }
+
+  void _setPlayerVolume(double v) {
+    final clamped = v.clamp(0.0, 1.0);
+    setState(() => _volume = clamped);
+    if (isDesktopPlatform) {
+      _controller?.setVolume(clamped);
+    } else {
+      unawaited(_setSystemVolume(clamped));
+    }
+    _scheduleHide();
+  }
+
+  void _toggleMute() {
+    if (_volume > 0.001) {
+      _volumeBeforeMute = _volume;
+      _setPlayerVolume(0);
+    } else {
+      _setPlayerVolume(_volumeBeforeMute <= 0.001 ? 1.0 : _volumeBeforeMute);
+    }
   }
 
   void _seekRelative(Duration delta) {
+    if (_partyBlockLocal()) return;
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     final next = c.value.position + delta;
@@ -47,13 +74,20 @@ extension _PlayerControls on _PlayerPageState {
         : next;
     c.seekTo(clamped);
     _scheduleHide();
+    if (!_isLive) {
+      _partyEmit('seek', positionSec: clamped.inMilliseconds / 1000.0);
+    }
   }
 
   void _seekTo(Duration position) {
+    if (_partyBlockLocal()) return;
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     c.seekTo(position);
     _scheduleHide();
+    if (!_isLive) {
+      _partyEmit('seek', positionSec: position.inMilliseconds / 1000.0);
+    }
   }
 
   void _clearDragAfterSeek(Duration target) {
@@ -102,8 +136,10 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   Future<void> _setSpeed(double speed) async {
+    if (_partyBlockLocal()) return;
     setState(() => _playbackSpeed = speed);
     await _controller?.setPlaybackSpeed(speed);
+    _partyEmit('rate', rate: speed);
   }
 
   void _setFit(_PlayerFit fit) {
@@ -113,22 +149,18 @@ extension _PlayerControls on _PlayerPageState {
   String _fitLabel(_PlayerFit fit) {
     switch (fit) {
       case _PlayerFit.contain:
-        return 'Original';
+        return 'player.fit_original'.tr();
       case _PlayerFit.cover:
-        return 'Fill';
+        return 'player.fit_fill'.tr();
       case _PlayerFit.fill:
-        return 'Stretch';
+        return 'player.fit_stretch'.tr();
     }
   }
 
-  // Generated frames stand in for VTT/storyboard previews on network videos
-  // (most CloudStream providers ship no thumbnails).
   bool get _canGeneratePreview =>
       FramePreviewService.isSupported &&
       _isNetworkVideo &&
       _videoUrl != null &&
-      // HLS frame-sampling: iOS AVAssetImageGenerator handles m3u8, but Android
-      // MediaMetadataRetriever can't — so only attempt HLS previews on iOS.
       (!_isHls || Platform.isIOS);
 
   Widget _buildVideoLayer() {
@@ -136,6 +168,20 @@ extension _PlayerControls on _PlayerPageState {
       return ColoredBox(
         color: Colors.black,
         child: _LoadingOverlay(stage: _stage, title: _episodeTitle()),
+      );
+    }
+    final pluginCap = _pluginRequired;
+    if (pluginCap != null) {
+      // A party:content identity this device cannot resolve (missing on-device
+      // plugin). Show the actionable install view — not a generic error — and
+      // let the guest back out to the lobby to retry after installing.
+      return ColoredBox(
+        color: Colors.black,
+        child: PartyPluginRequiredView(
+          provider: _partyState.room?.content?.provider ?? widget.args.provider,
+          installTarget: pluginCap.installTarget,
+          onBack: () => Navigator.of(context).maybePop(),
+        ),
       );
     }
     if (_errorMessage != null) {
@@ -166,7 +212,7 @@ extension _PlayerControls on _PlayerPageState {
                     foregroundColor: Colors.black,
                   ),
                   icon: const Icon(Icons.refresh_rounded, size: 18),
-                  label: const Text('Try again'),
+                  label: Text('general.try_again'.tr()),
                 ),
                 if (_isCodecError && _videoUrl != null) ...[
                   const SizedBox(height: 10),
@@ -182,7 +228,7 @@ extension _PlayerControls on _PlayerPageState {
                       side: const BorderSide(color: Colors.white24),
                     ),
                     icon: const Icon(Icons.open_in_browser_rounded, size: 18),
-                    label: const Text('Play in Browser'),
+                    label: Text('player.play_in_browser'.tr()),
                   ),
                 ],
                 if (isCloudflareError(_errorMessage)) ...[
@@ -200,7 +246,7 @@ extension _PlayerControls on _PlayerPageState {
                       side: const BorderSide(color: Colors.white24),
                     ),
                     icon: const Icon(Icons.shield_outlined, size: 18),
-                    label: const Text('Solve Cloudflare'),
+                    label: Text('cloudflare.solve'.tr()),
                   ),
                 ],
                 const SizedBox(height: 10),
@@ -210,7 +256,7 @@ extension _PlayerControls on _PlayerPageState {
                     foregroundColor: Colors.white60,
                   ),
                   icon: const Icon(Icons.bug_report_outlined, size: 18),
-                  label: const Text('View logs'),
+                  label: Text('player.view_logs'.tr()),
                 ),
               ],
             ),
@@ -254,18 +300,18 @@ extension _PlayerControls on _PlayerPageState {
                     color: Colors.black.withValues(alpha: 0.7),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.fast_forward_rounded,
                         color: Colors.white,
                         size: 16,
                       ),
-                      SizedBox(width: 6),
+                      const SizedBox(width: 6),
                       Text(
-                        '2x speed',
-                        style: TextStyle(
+                        'player.speed_2x'.tr(),
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
                           fontWeight: FontWeight.w800,
@@ -550,14 +596,15 @@ extension _PlayerControls on _PlayerPageState {
                     color: Colors.white.withValues(alpha: 0.15),
                   ),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.lock_rounded, color: Colors.white, size: 16),
-                    SizedBox(width: 8),
+                    const Icon(Icons.lock_rounded,
+                        color: Colors.white, size: 16),
+                    const SizedBox(width: 8),
                     Text(
-                      'Tap to unlock',
-                      style: TextStyle(
+                      'player.tap_to_unlock'.tr(),
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -625,49 +672,71 @@ extension _PlayerControls on _PlayerPageState {
                         ),
                         const SizedBox(width: 8),
                       ],
-                      _IconButton(
-                        icon: _isPortrait
-                            ? Icons.screen_lock_landscape_rounded
-                            : Icons.screen_lock_portrait_rounded,
-                        onTap: _toggleOrientation,
-                      ),
-                      const SizedBox(width: 8),
-                      _IconButton(
-                        icon: Icons.lock_outline_rounded,
-                        onTap: () => setState(() {
-                          _locked = true;
-                          _controlsVisible = false;
-                          _controlsAnimation.reverse();
-                          _hideTimer?.cancel();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _IconButton(
-                        icon: Icons.picture_in_picture_alt_rounded,
-                        onTap: _enterPip,
-                      ),
-                      const SizedBox(width: 8),
-                      _IconButton(
-                        icon: Icons.settings_outlined,
-                        onTap: _openSettingsSheet,
-                      ),
-                      const SizedBox(width: 8),
-                      _IconButton(
-                        icon: hasEpisodes
-                            ? Icons.video_library_rounded
-                            : Icons.high_quality_rounded,
-                        onTap: hasEpisodes
-                            ? () => _openPanel(_SidePanel.episodes)
-                            : hasQualities
-                            ? () => _openPanel(_SidePanel.quality)
-                            : _openSettingsSheet,
-                      ),
+                      // CloudStream (cs:) sources are excluded from Watch2Gether
+                      // for now (they need an on-device plugin per peer).
+                      if (_inParty || !widget.args.provider.startsWith('cs:')) ...[
+                        _IconButton(
+                          icon: _inParty
+                              ? Icons.groups_rounded
+                              : Icons.groups_2_outlined,
+                          color: _inParty ? AppColors.primary : null,
+                          onTap: _openWatchParty,
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      if (!isDesktopPlatform) ...[
+                        _IconButton(
+                          icon: _isPortrait
+                              ? Icons.screen_lock_landscape_rounded
+                              : Icons.screen_lock_portrait_rounded,
+                          onTap: _toggleOrientation,
+                        ),
+                        const SizedBox(width: 8),
+                        _IconButton(
+                          icon: Icons.lock_outline_rounded,
+                          onTap: () => setState(() {
+                            _locked = true;
+                            _controlsVisible = false;
+                            _controlsAnimation.reverse();
+                            _hideTimer?.cancel();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _IconButton(
+                          icon: Icons.picture_in_picture_alt_rounded,
+                          onTap: _enterPip,
+                        ),
+                        const SizedBox(width: 8),
+                        _IconButton(
+                          icon: Icons.settings_outlined,
+                          onTap: _openSettingsSheet,
+                        ),
+                        const SizedBox(width: 8),
+                        _IconButton(
+                          icon: hasEpisodes
+                              ? Icons.video_library_rounded
+                              : Icons.high_quality_rounded,
+                          onTap: hasEpisodes
+                              ? () => _openPanel(_SidePanel.episodes)
+                              : hasQualities
+                                  ? () => _openPanel(_SidePanel.quality)
+                                  : _openSettingsSheet,
+                        ),
+                      ],
+                      if (isDesktopPlatform)
+                        ValueListenableBuilder<bool>(
+                          valueListenable: DesktopWindow.immersive,
+                          builder: (_, imm, _) => imm
+                              ? const WindowButtons()
+                              : const SizedBox.shrink(),
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
-            if (initialized && !isBuffering) _buildCenterPlayCluster(c),
+            if (initialized && !isBuffering && !isDesktopPlatform)
+              _buildCenterPlayCluster(c),
             if (isBuffering)
               const Center(
                 child: SizedBox(
@@ -716,6 +785,135 @@ extension _PlayerControls on _PlayerPageState {
               _seekRelative(const Duration(seconds: 10));
               _showSeekRipple(1);
             },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopControlRow(
+    PlayerController c,
+    bool hasEpisodes,
+    bool hasQualities,
+    bool hasPrev,
+    bool hasNext,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _DesktopVolumeControl(
+                volume: _volume,
+                onChanged: _setPlayerVolume,
+                onToggleMute: _toggleMute,
+              ),
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (hasEpisodes) ...[
+                _IconButton(
+                  icon: Icons.skip_previous_rounded,
+                  onTap: () {
+                    if (_episodeIndex - 1 >= 0) {
+                      _partyEpisodeNav(_episodeIndex - 1);
+                    }
+                  },
+                ),
+                const SizedBox(width: 4),
+              ],
+              _IconButton(
+                icon: Icons.replay_10_rounded,
+                onTap: () {
+                  _seekRelative(const Duration(seconds: -10));
+                  _showSeekRipple(-1);
+                },
+              ),
+              const SizedBox(width: 6),
+              ValueListenableBuilder<VideoPlayerValue>(
+                valueListenable: c,
+                builder: (_, value, _) => _IconButton(
+                  icon: value.isPlaying
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  onTap: _togglePlay,
+                ),
+              ),
+              const SizedBox(width: 6),
+              _IconButton(
+                icon: Icons.forward_10_rounded,
+                onTap: () {
+                  _seekRelative(const Duration(seconds: 10));
+                  _showSeekRipple(1);
+                },
+              ),
+              if (hasEpisodes) ...[
+                const SizedBox(width: 4),
+                _IconButton(
+                  icon: Icons.skip_next_rounded,
+                  onTap: () {
+                    if (_episodeIndex + 1 < widget.args.episodes.length) {
+                      _partyEpisodeNav(_episodeIndex + 1);
+                    }
+                  },
+                ),
+              ],
+            ],
+          ),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _BottomTextButton(
+                      icon: Icons.speed_rounded,
+                      label:
+                          '${_playbackSpeed.toStringAsFixed(_playbackSpeed == _playbackSpeed.roundToDouble() ? 0 : 2)}x',
+                      enabled: true,
+                      onTap: _openSpeedSheet,
+                    ),
+                    _IconButton(
+                      icon: Icons.subtitles_outlined,
+                      onTap: _openSubtitleSheet,
+                    ),
+                    const SizedBox(width: 4),
+                    _IconButton(
+                      icon: Icons.settings_outlined,
+                      onTap: _openSettingsSheet,
+                    ),
+                    if (hasQualities) ...[
+                      const SizedBox(width: 4),
+                      _IconButton(
+                        icon: Icons.high_quality_rounded,
+                        onTap: () => _openPanel(_SidePanel.quality),
+                      ),
+                    ],
+                    if (hasEpisodes) ...[
+                      const SizedBox(width: 4),
+                      _IconButton(
+                        icon: Icons.video_library_rounded,
+                        onTap: () => _openPanel(_SidePanel.episodes),
+                      ),
+                    ],
+                    const SizedBox(width: 4),
+                    _IconButton(
+                      icon: _isFullscreen
+                          ? Icons.fullscreen_exit_rounded
+                          : Icons.fullscreen_rounded,
+                      onTap: _toggleFullscreen,
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -858,9 +1056,6 @@ extension _PlayerControls on _PlayerPageState {
                                     max: maxMs,
                                     onChangeStart: (v) {
                                       _sliderDragValue.value = v;
-                                      // Keep controls + thumbnail preview on
-                                      // screen while the user holds/drags the
-                                      // seekbar (don't let auto-hide fire).
                                       _hideTimer?.cancel();
                                     },
                                     onChanged: (v) {
@@ -870,7 +1065,7 @@ extension _PlayerControls on _PlayerPageState {
                                     onChangeEnd: (v) {
                                       final target = Duration(
                                           milliseconds: v.toInt());
-                                      _seekTo(target); // reschedules auto-hide
+                                      _seekTo(target);
                                       _clearDragAfterSeek(target);
                                     },
                                   ),
@@ -894,6 +1089,10 @@ extension _PlayerControls on _PlayerPageState {
                 },
               ),
               const SizedBox(height: 4),
+              if (isDesktopPlatform)
+                _buildDesktopControlRow(
+                    c, hasEpisodes, hasQualities, hasPrev, hasNext)
+              else
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -901,16 +1100,16 @@ extension _PlayerControls on _PlayerPageState {
                     if (hasEpisodes)
                       _BottomTextButton(
                         icon: Icons.skip_previous_rounded,
-                        label: 'Previous',
+                        label: 'player.previous'.tr(),
                         enabled: hasPrev,
-                        onTap: () => _loadEpisode(_episodeIndex - 1),
+                        onTap: () => _partyEpisodeNav(_episodeIndex - 1),
                       ),
                     if (hasEpisodes)
                       _BottomTextButton(
                         icon: Icons.skip_next_rounded,
-                        label: 'Next',
+                        label: 'general.next'.tr(),
                         enabled: hasNext,
-                        onTap: () => _loadEpisode(_episodeIndex + 1),
+                        onTap: () => _partyEpisodeNav(_episodeIndex + 1),
                       ),
                     _BottomTextButton(
                       icon: Icons.speed_rounded,
@@ -922,14 +1121,14 @@ extension _PlayerControls on _PlayerPageState {
                     if (hasQualities)
                       _BottomTextButton(
                         icon: Icons.high_quality_rounded,
-                        label: _currentQuality ?? 'Quality',
+                        label: _currentQuality ?? 'player.quality'.tr(),
                         enabled: true,
                         onTap: () => _openPanel(_SidePanel.quality),
                       ),
                     if (hasEpisodes)
                       _BottomTextButton(
                         icon: Icons.list_rounded,
-                        label: 'Episodes',
+                        label: 'player.episodes'.tr(),
                         enabled: true,
                         onTap: () => _openPanel(_SidePanel.episodes),
                       ),
@@ -943,7 +1142,6 @@ extension _PlayerControls on _PlayerPageState {
     );
   }
 
-  /// Replaces the seek bar for live / IPTV streams (no fixed duration to scrub).
   Widget _buildLiveBar() {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -951,9 +1149,9 @@ extension _PlayerControls on _PlayerPageState {
         children: [
           const _LiveDot(),
           const SizedBox(width: 7),
-          const Text(
-            'LIVE',
-            style: TextStyle(
+          Text(
+            'player.live'.tr(),
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 12,
               fontWeight: FontWeight.w800,
@@ -961,10 +1159,9 @@ extension _PlayerControls on _PlayerPageState {
             ),
           ),
           const Spacer(),
-          // Jump back to the live edge after a pause / DVR rewind.
           _BottomTextButton(
             icon: Icons.fiber_manual_record_rounded,
-            label: 'Go live',
+            label: 'player.go_live'.tr(),
             enabled: true,
             onTap: () {
               final c = _controller;

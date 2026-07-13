@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
+import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/notifications/domain/entities/notification_item.dart';
 import 'package:soplay/features/notifications/presentation/bloc/notifications_bloc.dart';
@@ -68,6 +69,12 @@ class _NotificationsViewState extends State<_NotificationsView> {
           style: const TextStyle(color: AppColors.textPrimary),
         ),
         actions: [
+          DesktopRefreshButton(
+            color: AppColors.textPrimary,
+            onRefresh: () => context
+                .read<NotificationsBloc>()
+                .add(const NotificationsRefresh()),
+          ),
           BlocBuilder<NotificationsBloc, NotificationsState>(
             buildWhen: (a, b) => a.unread != b.unread,
             builder: (context, state) {
@@ -109,7 +116,9 @@ class _NotificationsViewState extends State<_NotificationsView> {
             onRefresh: () async {
               context.read<NotificationsBloc>().add(const NotificationsRefresh());
             },
-            child: ListView.separated(
+            child: MaxWidthBox(
+              maxWidth: 560,
+              child: ListView.separated(
               controller: _scroll,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               itemCount: state.items.length + (state.hasMore ? 1 : 0),
@@ -134,7 +143,7 @@ class _NotificationsViewState extends State<_NotificationsView> {
                       .add(NotificationsDelete(item.id)),
                 );
               },
-            ),
+            )),
           );
         },
       ),
@@ -154,6 +163,42 @@ class _NotificationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tile = Material(
+      color: item.read ? AppColors.surface : AppColors.surfaceVariant,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: item.imageUrl != null && item.imageUrl!.isNotEmpty
+            ? _buildImageCard()
+            : _buildTextRow(),
+      ),
+    );
+
+    if (isDesktopPlatform) {
+      return Stack(
+        children: [
+          tile,
+          Positioned(
+            top: 4,
+            right: 4,
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.35),
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: IconButton(
+                tooltip: 'general.delete'.tr(),
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                onPressed: onDelete,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Dismissible(
       key: ValueKey(item.id),
       direction: DismissDirection.endToStart,
@@ -167,17 +212,7 @@ class _NotificationTile extends StatelessWidget {
         child: const Icon(Icons.delete_outline, color: Colors.white),
       ),
       onDismissed: (_) => onDelete(),
-      child: Material(
-        color: item.read ? AppColors.surface : AppColors.surfaceVariant,
-        borderRadius: BorderRadius.circular(12),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: item.imageUrl != null && item.imageUrl!.isNotEmpty
-              ? _buildImageCard()
-              : _buildTextRow(),
-        ),
-      ),
+      child: tile,
     );
   }
 

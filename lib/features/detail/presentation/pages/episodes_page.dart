@@ -1,10 +1,12 @@
 import 'dart:ui';
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/error/result.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/detail/domain/entities/episode_entity.dart';
 import 'package:soplay/features/detail/domain/entities/episodes_args.dart';
@@ -62,6 +64,19 @@ class _EpisodesPageState extends State<EpisodesPage> {
     _historyService.revision.addListener(_refreshHistory);
     _downloads.revision.addListener(_onDownloadsChanged);
     _refreshHistory();
+    _maybeAutoFill();
+  }
+
+  void _maybeAutoFill() {
+    if (!isDesktopPlatform) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      if (!_loadingMore &&
+          _page < _totalPages &&
+          _scroll.position.maxScrollExtent <= 0) {
+        _loadMore();
+      }
+    });
   }
 
   void _onDownloadsChanged() {
@@ -133,6 +148,7 @@ class _EpisodesPageState extends State<EpisodesPage> {
           _showImages = _showImages || _hasAnyImage(value.episodes);
           _loadingMore = false;
         });
+        _maybeAutoFill();
       case Failure(:final error):
         setState(() {
           _loadingMore = false;
@@ -192,13 +208,10 @@ class _EpisodesPageState extends State<EpisodesPage> {
   }
 
   void _playFrom(int index) {
-    // Resume from saved position if this is the history episode/chapter.
     final isHistoryEntry = _historyItem != null &&
         _historyItem!.episodeIndex == index &&
         _historyItem!.positionMs > 0;
 
-    // Manga sources open the page reader instead of the video player. The saved
-    // `positionMs` for manga is the page index (see ReaderPage).
     if (widget.args.provider.startsWith('mn:')) {
       context.push(
         '/reader',
@@ -231,7 +244,6 @@ class _EpisodesPageState extends State<EpisodesPage> {
     );
   }
 
-  /// Resolves the chapter's pages and starts an offline manga download.
   Future<void> _downloadChapter(int index) async {
     final ch = _episodes[index];
     final id = DownloadService.mangaChapterId(
@@ -253,7 +265,7 @@ class _EpisodesPageState extends State<EpisodesPage> {
     if (!mounted) return;
     if (result is! Success<MangaPagesEntity>) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to resolve pages')),
+        SnackBar(content: Text('detail.failed_resolve_pages'.tr())),
       );
       return;
     }
@@ -508,7 +520,7 @@ class _SortToggle extends StatelessWidget {
                 ),
               const SizedBox(width: 6),
               Text(
-                isDesc ? 'Newest' : 'Oldest',
+                isDesc ? 'search.sort_newest'.tr() : 'search.sort_oldest'.tr(),
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 12,
@@ -531,7 +543,9 @@ class _CountHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final showOf = total > 0 && total > loaded;
-    final label = showOf ? '$loaded of $total episodes' : '$total episodes';
+    final label = showOf
+        ? 'detail.episodes_count_of'.tr(args: ['$loaded', '$total'])
+        : 'detail.episodes_count'.tr(args: ['$total']);
     return Text(
       label,
       style: const TextStyle(
@@ -576,7 +590,7 @@ class _LoadMoreError extends StatelessWidget {
               ),
             ),
           ),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          TextButton(onPressed: onRetry, child: Text('general.retry'.tr())),
         ],
       ),
     );
@@ -606,7 +620,7 @@ class _EpisodeRow extends StatelessWidget {
     final hasDub = episode.hasDub == true;
     final label = episode.label.isNotEmpty
         ? episode.label
-        : 'Episode ${episode.episode}';
+        : 'detail.episode_n'.tr(args: ['${episode.episode}']);
 
     return InkWell(
       onTap: onTap,
@@ -784,7 +798,6 @@ class _DownloadControl extends StatelessWidget {
       );
     }
 
-    // Not downloaded yet (or previously failed) — tappable to (re)start.
     final failed = status == DownloadStatus.failed;
     return GestureDetector(
       onTap: onDownload,
@@ -907,19 +920,22 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          const Icon(
             Icons.video_library_outlined,
             color: AppColors.textHint,
             size: 48,
           ),
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           Text(
-            'No episodes available',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+            'detail.no_episodes'.tr(),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 14,
+            ),
           ),
         ],
       ),

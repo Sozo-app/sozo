@@ -27,11 +27,22 @@ import 'package:soplay/features/notifications/presentation/pages/notifications_p
 import 'package:soplay/features/private_list/presentation/pages/private_list_page.dart';
 import 'package:soplay/features/splash/presentation/pages/splash_page.dart';
 import 'package:soplay/features/streak/presentation/pages/streak_page.dart';
+import 'package:soplay/features/watch_party/presentation/party_entry.dart';
+import 'package:soplay/features/watch_party/presentation/pages/watch_party_page.dart';
 
 import '../../features/home/presentation/pages/home_view_all_page.dart';
 
 class AppRouter {
   AppRouter._();
+
+  static bool dismissTopmost() {
+    final nav = router.routerDelegate.navigatorKey.currentState;
+    if (nav != null && nav.canPop()) {
+      nav.maybePop();
+      return true;
+    }
+    return false;
+  }
 
   static final router = GoRouter(
     initialLocation: '/splash',
@@ -44,8 +55,6 @@ class AppRouter {
         builder: (context, state) {
           final args = state.extra as ViewAllEntity;
           final slug = args.slug;
-          // Prefer the section's real label; fall back to slug/type. Never show a
-          // raw CloudStream API URL (slug) as the title.
           final title = args.name.isNotEmpty
               ? args.name
               : (slug.isEmpty ? args.type : slug);
@@ -59,7 +68,6 @@ class AppRouter {
       GoRoute(
         path: '/detail',
         builder: (context, state) {
-          // Support deep link: /detail?url=<contentUrl>&provider=<id>
           final extra = state.extra;
           if (extra is DetailArgs) return DetailPage(args: extra);
           final q = state.uri.queryParameters;
@@ -126,6 +134,17 @@ class AppRouter {
       GoRoute(
         path: '/streak',
         builder: (context, state) => const StreakPage(),
+      ),
+      GoRoute(
+        path: '/watch-party',
+        builder: (context, state) {
+          final extra = state.extra;
+          return WatchPartyPage(
+            code: extra is WatchPartyArgs
+                ? extra.code
+                : state.uri.queryParameters['code'],
+          );
+        },
       ),
       GoRoute(path: '/splash', builder: (context, state) => const SplashPage()),
       GoRoute(path: '/main', builder: (context, state) => const MainPage()),

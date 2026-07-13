@@ -1,9 +1,13 @@
+import 'dart:ui' show ImageFilter;
+
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/detail/domain/entities/detail_args.dart';
 import 'package:soplay/features/home/domain/entities/view_all.dart';
@@ -70,6 +74,7 @@ class _ShortsViewState extends State<_ShortsView>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (isDesktopPlatform) return;
     final next = state == AppLifecycleState.resumed;
     if (_appActive == next) return;
     setState(() => _appActive = next);
@@ -150,7 +155,43 @@ class _ShortsViewState extends State<_ShortsView>
     }
 
     if (mounted) setState(() => _detailOpen = false);
-    _showNotice('Content not available');
+    _showNotice('shorts.content_unavailable'.tr());
+  }
+
+  Widget _reelFrame(Widget reel) {
+    if (!isDesktopPlatform) return reel;
+    return Center(
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final width = (c.maxHeight * 9 / 16).clamp(340.0, 560.0);
+          return SizedBox(width: width, height: c.maxHeight, child: reel);
+        },
+      ),
+    );
+  }
+
+  Widget _blurredBackdrop(String thumbnail) {
+    if (!isDesktopPlatform || thumbnail.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
+              child: Image.network(
+                thumbnail,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const ColoredBox(color: Colors.black),
+              ),
+            ),
+            ColoredBox(color: Colors.black.withValues(alpha: 0.55)),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -182,12 +223,16 @@ class _ShortsViewState extends State<_ShortsView>
                   onRetry: () =>
                       context.read<ShortsBloc>().add(const ShortsLoad()),
                 ),
-                ShortsLoaded(:final items) =>
+                ShortsLoaded(:final items, :final activeIndex) =>
                   items.isEmpty
                       ? const ShortsEmptyView()
                       : Stack(
                           children: [
-                            PageView.builder(
+                            _blurredBackdrop(
+                              items[activeIndex.clamp(0, items.length - 1)]
+                                  .thumbnail,
+                            ),
+                            _reelFrame(PageView.builder(
                               controller: _controller,
                               scrollDirection: Axis.vertical,
                               itemCount:
@@ -231,7 +276,7 @@ class _ShortsViewState extends State<_ShortsView>
                                   onOpenDetail: () => _openContent(item),
                                 );
                               },
-                            ),
+                            )),
                             Positioned(
                               top: 0,
                               left: 0,
@@ -256,9 +301,9 @@ class _ShortsViewState extends State<_ShortsView>
                                     left: 16,
                                   ),
                                   alignment: Alignment.topLeft,
-                                  child: const Text(
-                                    'Shorts',
-                                    style: TextStyle(
+                                  child: Text(
+                                    'navigation.shorts'.tr(),
+                                    style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 20,
                                       fontWeight: FontWeight.w800,
@@ -284,6 +329,25 @@ class _ShortsViewState extends State<_ShortsView>
                                   backgroundColor: Colors.transparent,
                                 ),
                               ),
+                            if (isDesktopPlatform)
+                              Positioned(
+                                top: topPad + 8,
+                                right: 8,
+                                child: IconButton(
+                                  tooltip: 'shorts.refresh'.tr(),
+                                  icon: const Icon(
+                                    Icons.refresh_rounded,
+                                    color: Colors.white,
+                                    shadows: [
+                                      Shadow(
+                                        color: Colors.black87,
+                                        blurRadius: 8,
+                                      ),
+                                    ],
+                                  ),
+                                  onPressed: _refresh,
+                                ),
+                              ),
                           ],
                         ),
               };
@@ -296,11 +360,11 @@ class _ShortsViewState extends State<_ShortsView>
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.55),
                   ),
-                  child: const Center(
+                  child: Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
+                        const SizedBox(
                           width: 40,
                           height: 40,
                           child: CircularProgressIndicator(
@@ -308,10 +372,10 @@ class _ShortsViewState extends State<_ShortsView>
                             strokeWidth: 3,
                           ),
                         ),
-                        SizedBox(height: 14),
+                        const SizedBox(height: 14),
                         Text(
-                          'Opening...',
-                          style: TextStyle(
+                          'shorts.opening'.tr(),
+                          style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 13,
                             fontWeight: FontWeight.w500,

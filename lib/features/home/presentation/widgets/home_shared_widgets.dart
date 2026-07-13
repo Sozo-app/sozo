@@ -9,13 +9,15 @@ class ShimmerWrapper extends StatelessWidget {
   const ShimmerWrapper({super.key, required this.child});
   final Widget child;
 
-  static const _base = Color(0xFF1E1E1E);
-  static const _highlight = Color(0xFF383838);
+  // Subtle sweep tuned for the dark surface — low contrast, slow period.
+  static const _base = Color(0xFF202020);
+  static const _highlight = Color(0xFF2B2B2B);
 
   @override
   Widget build(BuildContext context) => Shimmer.fromColors(
     baseColor: _base,
     highlightColor: _highlight,
+    period: const Duration(milliseconds: 1650),
     child: child,
   );
 }
@@ -35,14 +37,8 @@ class HomeNetworkImage extends StatelessWidget {
   final IconData placeholderIcon;
   final BoxFit fit;
 
-  /// Optional explicit image request headers (e.g. provider Referer/UA). When
-  /// null, a same-origin Referer + browser UA is derived from the image URL.
   final Map<String, String>? headers;
 
-  /// Many provider CDNs (CloudStream/aniyomi/manga sources) hotlink-protect
-  /// posters with a `Referer` check and/or reject non-browser User-Agents, so a
-  /// bare `Image.network` 403s and shows a broken placeholder. A same-origin
-  /// Referer + a browser UA satisfies the common cases.
   static Map<String, String>? _defaultHeaders(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
@@ -85,13 +81,7 @@ class HomeNetworkImage extends StatelessWidget {
       borderRadius: borderRadius,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          // Decode at the on-screen width (× DPR) instead of the source's full
-          // resolution. Posters/banners are small on screen, so this slashes the
-          // decoded-bitmap memory that was OOM-killing the app on heavy home
-          // pages — with no visible quality change.
           final dpr = MediaQuery.devicePixelRatioOf(context);
-          // The cacheWidth cap is a mobile OOM guard. Desktop has ample RAM, so
-          // decode at full source resolution there for crisp posters.
           final w = (!isDesktopPlatform && constraints.maxWidth.isFinite)
               ? (constraints.maxWidth * dpr).round()
               : null;

@@ -13,6 +13,8 @@ import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/download/data/download_service.dart';
 import 'package:soplay/features/download/domain/entities/download_item.dart';
+import 'package:soplay/features/home/presentation/bloc/home/home_bloc.dart';
+import 'package:soplay/features/home/presentation/bloc/home/home_event.dart';
 import 'package:soplay/features/notifications/domain/repositories/notifications_repository.dart';
 import 'package:soplay/features/profile/domain/entities/provider_entity.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_bloc.dart';
@@ -20,6 +22,7 @@ import 'package:soplay/features/profile/presentation/bloc/provider_event.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_state.dart';
 import 'package:soplay/features/profile/presentation/pages/profile_page.dart';
 import 'package:soplay/features/streak/presentation/widgets/streak_badge.dart';
+import 'package:soplay/features/watch_party/presentation/party_entry.dart';
 
 class HomeTopBar extends StatelessWidget {
   const HomeTopBar({super.key, required this.blurProgress});
@@ -46,8 +49,6 @@ class HomeTopBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          // Quick-switch between the user's favorite providers; the Flexible
-          // absorbs the slack the old Spacer did so the icons stay right-aligned.
           const Flexible(
             child: Align(
               alignment: Alignment.centerLeft,
@@ -56,6 +57,15 @@ class HomeTopBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           const StreakBadge(),
+          DesktopRefreshButton(
+            color: AppColors.textPrimary,
+            onRefresh: () =>
+                context.read<HomeBloc>().add(HomeLoad(silent: true)),
+          ),
+          _TopBarIcon(
+            icon: Icons.groups_rounded,
+            onTap: () => showPartyEntrySheet(context),
+          ),
           _TopBarIcon(
             icon: Icons.search_rounded,
             onTap: () => getIt<NavController>().goTo(1),
@@ -66,7 +76,6 @@ class HomeTopBar extends StatelessWidget {
       ),
     );
 
-    // No scroll — gradient scrim over banner
     if (progress < 0.01) {
       return Container(
         decoration: BoxDecoration(
@@ -83,7 +92,6 @@ class HomeTopBar extends StatelessWidget {
       );
     }
 
-    // Scrolling — frosted glass blur
     return RepaintBoundary(
       child: ClipRect(
         child: BackdropFilter(
@@ -111,10 +119,6 @@ class HomeTopBar extends StatelessWidget {
   }
 }
 
-/// Compact pill in the top bar showing the current provider. Tapping it opens a
-/// quick-switch sheet of the user's favorite providers (plus an "All providers"
-/// shortcut to the full picker). With no favorites it jumps straight to the
-/// full picker.
 class _ProviderSwitcher extends StatelessWidget {
   const _ProviderSwitcher();
 
@@ -204,12 +208,8 @@ class _ProviderSwitcher extends StatelessWidget {
   }
 }
 
-/// Sentinel returned by the quick-switch sheet for the "All providers" row.
 const String _kAllProvidersAction = '__all_providers__';
 
-/// Bottom sheet listing the user's favorite providers for one-tap switching,
-/// plus a shortcut to the full provider picker. Pops the chosen provider id
-/// (or [_kAllProvidersAction]) so the caller owns navigation/selection.
 class _ProviderQuickSwitchSheet extends StatelessWidget {
   const _ProviderQuickSwitchSheet({
     required this.favorites,
@@ -254,37 +254,27 @@ class _ProviderQuickSwitchSheet extends StatelessWidget {
               ],
             ),
           ),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              padding: EdgeInsets.zero,
-              itemCount: favorites.length,
-              itemBuilder: (context, i) {
-                final p = favorites[i];
-                final selected = p.id == currentProviderId;
-                return ListTile(
-                  leading: _ProviderLogo(image: p.image, size: 36),
-                  title: Text(
-                    p.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: selected
-                          ? AppColors.textPrimary
-                          : AppColors.textSecondary,
-                      fontSize: 14,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  ),
-                  trailing: selected
-                      ? const Icon(Icons.check_rounded,
-                          color: AppColors.primary, size: 20)
-                      : null,
-                  onTap: () => Navigator.of(context).pop(p.id),
-                );
-              },
+          if (isDesktopPlatform)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 360),
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: favorites.length,
+                itemBuilder: (context, i) =>
+                    _favoriteProviderTile(context, favorites[i], currentProviderId),
+              ),
+            )
+          else
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: favorites.length,
+                itemBuilder: (context, i) =>
+                    _favoriteProviderTile(context, favorites[i], currentProviderId),
+              ),
             ),
-          ),
           const Divider(color: AppColors.divider, height: 1),
           ListTile(
             leading: Container(
@@ -316,8 +306,28 @@ class _ProviderQuickSwitchSheet extends StatelessWidget {
   }
 }
 
-/// Small rounded provider logo with a graceful fallback when the image is
-/// missing or fails to load.
+Widget _favoriteProviderTile(
+    BuildContext context, ProviderEntity p, String currentProviderId) {
+  final selected = p.id == currentProviderId;
+  return ListTile(
+    leading: _ProviderLogo(image: p.image, size: 36),
+    title: Text(
+      p.name,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: selected ? AppColors.textPrimary : AppColors.textSecondary,
+        fontSize: 14,
+        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+      ),
+    ),
+    trailing: selected
+        ? const Icon(Icons.check_rounded, color: AppColors.primary, size: 20)
+        : null,
+    onTap: () => Navigator.of(context).pop(p.id),
+  );
+}
+
 class _ProviderLogo extends StatelessWidget {
   const _ProviderLogo({required this.image, required this.size});
 

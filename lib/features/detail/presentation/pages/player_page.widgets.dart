@@ -1,6 +1,5 @@
 part of 'player_page.dart';
 
-/// Pulsing red dot used by the LIVE indicator.
 class _LiveDot extends StatefulWidget {
   const _LiveDot();
 
@@ -44,9 +43,6 @@ class _FittedVideo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Desktop (media_kit): let the backend fill the area and letterbox itself
-    // via BoxFit — its texture handles aspect correctly. Mobile keeps the
-    // manual sizing below around the raw video_player surface.
     if (controller.letterboxesInternally) {
       final boxFit = switch (fit) {
         _PlayerFit.contain => BoxFit.contain,
@@ -147,18 +143,18 @@ class _LoadingOverlay extends StatelessWidget {
   String get _label {
     switch (stage) {
       case _LoadingStage.resolving:
-        return 'Extracting media…';
+        return 'player.extracting_media'.tr();
       case _LoadingStage.loading:
-        return 'Loading video…';
+        return 'player.loading_video'.tr();
     }
   }
 
   String get _hint {
     switch (stage) {
       case _LoadingStage.resolving:
-        return 'Fetching playback link from provider';
+        return 'player.fetching_link'.tr();
       case _LoadingStage.loading:
-        return 'Preparing video stream';
+        return 'player.preparing_stream'.tr();
     }
   }
 
@@ -242,14 +238,20 @@ class _LoadingOverlay extends StatelessWidget {
 }
 
 class _IconButton extends StatelessWidget {
-  const _IconButton({required this.icon, required this.onTap});
+  const _IconButton({required this.icon, required this.onTap, this.color});
   final IconData icon;
   final VoidCallback onTap;
+
+  /// When set, tints the icon (and gives a subtle matching background) — used
+  /// to show an "active" state, e.g. the Watch Party button while in a party.
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.black.withValues(alpha: 0.35),
+      color: color != null
+          ? color!.withValues(alpha: 0.22)
+          : Colors.black.withValues(alpha: 0.35),
       shape: const CircleBorder(),
       child: InkWell(
         onTap: onTap,
@@ -257,8 +259,61 @@ class _IconButton extends StatelessWidget {
         child: SizedBox(
           width: 38,
           height: 38,
-          child: Icon(icon, color: Colors.white, size: 18),
+          child: Icon(icon, color: color ?? Colors.white, size: 18),
         ),
+      ),
+    );
+  }
+}
+
+class _DesktopVolumeControl extends StatelessWidget {
+  const _DesktopVolumeControl({
+    required this.volume,
+    required this.onChanged,
+    required this.onToggleMute,
+  });
+
+  final double volume;
+  final ValueChanged<double> onChanged;
+  final VoidCallback onToggleMute;
+
+  IconData get _icon => volume <= 0.001
+      ? Icons.volume_off_rounded
+      : volume < 0.5
+          ? Icons.volume_down_rounded
+          : Icons.volume_up_rounded;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: (e) {
+        if (e is PointerScrollEvent) {
+          final step = e.scrollDelta.dy < 0 ? 0.05 : -0.05;
+          onChanged((volume + step).clamp(0.0, 1.0));
+        }
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _IconButton(icon: _icon, onTap: onToggleMute),
+          SizedBox(
+            width: 104,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: Colors.white,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.white,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+              ),
+              child: Slider(
+                value: volume.clamp(0.0, 1.0),
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -392,7 +447,7 @@ class _EpisodeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = episode.label.trim().isEmpty
-        ? 'Episode ${episode.episode}'
+        ? 'player.episode_n'.tr(args: ['${episode.episode}'])
         : episode.label;
     return InkWell(
       onTap: onTap,
@@ -837,9 +892,6 @@ class _Chip extends StatelessWidget {
   }
 }
 
-/// Seek-preview image built from a natively-generated video frame (for providers
-/// without VTT/storyboard thumbnails). Frames are bucketed + cached by the
-/// service, so scrubbing only extracts a handful.
 class _GeneratedFramePreview extends StatefulWidget {
   const _GeneratedFramePreview({
     required this.url,
@@ -883,16 +935,11 @@ class _GeneratedFramePreviewState extends State<_GeneratedFramePreview> {
         widget.url, widget.headers, widget.positionMs);
     if (!mounted) return;
     if (bytes != null) {
-      // Got a frame → show it and keep it. Once we have any frame we never go
-      // back to a spinner/blank, so the preview can't "disappear" mid-scrub.
       setState(() {
         _bytes = bytes;
         _failed = false;
       });
     } else if (_bytes == null && !_failed) {
-      // Very first attempt produced nothing (source still opening / unframeable)
-      // → collapse quietly once. Later buckets still retry (null isn't cached);
-      // if any yields a frame it shows and stays. No spinner⇄blank flicker.
       setState(() => _failed = true);
     }
   }
@@ -910,9 +957,6 @@ class _GeneratedFramePreviewState extends State<_GeneratedFramePreview> {
         filterQuality: FilterQuality.low,
       );
     }
-    // Couldn't extract a frame (e.g. headers/CDN) → show nothing rather than a
-    // broken-image placeholder; a later scrub bucket will retry (null isn't
-    // cached). While the first attempt is in flight, show a small spinner.
     if (_failed) return const SizedBox.shrink();
     return Container(
       width: _w,

@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:soplay/core/navigation/nav_controller.dart';
 import 'package:soplay/core/system/platform_utils.dart';
@@ -14,6 +15,7 @@ import 'package:soplay/features/search/presentation/blocs/search_bloc.dart';
 
 import 'core/di/injection.dart';
 import 'core/router/app_router.dart';
+import 'core/system/desktop_window.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/home/presentation/bloc/home/home_bloc.dart';
@@ -45,16 +47,44 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     getIt<NotificationService>().onTap = _handlePushTap;
+    // Desktop: hide the custom title-bar strip on the immersive full-bleed
+    // routes (player / reader) by watching the router itself — reliable
+    // regardless of a page's initState timing.
+    if (isDesktopPlatform) {
+      AppRouter.router.routerDelegate.addListener(_syncImmersive);
+      _syncImmersive();
+    }
+  }
+
+  /// Set [DesktopWindow.immersive] from the current top-of-stack route.
+  void _syncImmersive() {
+    try {
+      final path =
+          AppRouter.router.routerDelegate.currentConfiguration.uri.path;
+      DesktopWindow.immersive.value = path == '/player' || path == '/reader';
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    if (isDesktopPlatform) {
+      AppRouter.router.routerDelegate.removeListener(_syncImmersive);
+    }
     getIt<NotificationService>().onTap = null;
     super.dispose();
   }
 
   void _handlePushTap(Map<String, dynamic> data) {
     final router = AppRouter.router;
+
+    // Watch-party invites arrive as type:'system_other' + data.roomCode, so a
+    // type-based branch would never fire — key off roomCode before the switch.
+    final roomCode = data['roomCode'];
+    if (roomCode is String && roomCode.isNotEmpty) {
+      router.push('/watch-party?code=$roomCode');
+      return;
+    }
+
     final type = data['type']?.toString() ?? '';
     final contentUrl = data['contentUrl']?.toString();
     final provider = data['provider']?.toString();
@@ -106,6 +136,29 @@ class _MyAppState extends State<MyApp> {
         // with a mouse & trackpad. Mobile keeps Flutter's default behaviour.
         scrollBehavior: isDesktopPlatform ? const _DesktopScrollBehavior() : null,
         routerConfig: AppRouter.router,
+        // Desktop: a custom frameless title bar + Esc-to-dismiss (closes the
+        // topmost dialog/sheet, else pops the page). Mobile returns the child
+        // unchanged.
+        builder: (context, child) {
+          final app = child ?? const SizedBox.shrink();
+          if (!isDesktopPlatform) return app;
+          final shell = Column(
+            children: [
+              const WindowTitleBar(),
+              Expanded(child: app),
+            ],
+          );
+          return CallbackShortcuts(
+            bindings: {
+              // Dismiss the topmost route on the real Navigator — a dialog/sheet
+              // if one is open, otherwise the page. (GoRouter.pop() ignores
+              // imperative overlays and would pop the page under a dialog.)
+              const SingleActivator(LogicalKeyboardKey.escape):
+                  AppRouter.dismissTopmost,
+            },
+            child: Focus(autofocus: true, child: shell),
+          );
+        },
         localizationsDelegates: context.localizationDelegates,
         supportedLocales: context.supportedLocales,
         locale: context.locale,
