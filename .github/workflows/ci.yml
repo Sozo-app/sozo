@@ -1,0 +1,144 @@
+name: CI
+
+# There was no CI here at all before, so `flutter analyze` and the test suite
+# only ever ran on whichever machine happened to run them — which means a PR
+# from somebody else arrived with no evidence at all that it built.
+#
+# `push` is the default branch only, on purpose. It used to be every branch,
+# and with `pull_request` alongside it every push to a branch with a PR open ran
+# the whole thing TWICE: two analyses and two Android builds, about twenty-four
+# runner-minutes where twelve would do. The pair covers everything between them
+# — a branch with a PR is covered by `pull_request`, a push straight to the
+# default branch by `push` — and nothing is covered twice.
+#
+# A branch with no PR yet now gets no CI. That is the intended trade: it is the
+# state where nobody is waiting on a verdict, and opening the PR runs it.
+
+on:
+  push:
+    branches: [master]
+    tags-ignore: ['v*']      # a tag push is a release; release.yml owns that
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # `.env` is declared as a pubspec asset, so its absence fails the build
+      # before a single line is analysed. An empty file is enough here: every
+      # key in it is optional and the code degrades to the feature being off.
+      - name: Create an empty .env
+        run: touch .env
+
+      - run: flutter --version
+      - run: flutter pub get
+
+      # Advisory, not a gate. 357 of 640 files are currently unformatted, so
+      # turning this red would either block every PR or force a reformat commit
+      # that rewrites `git blame` across the whole repository. Left reporting
+      # only until somebody chooses to do that deliberately, in its own commit;
+      # then drop `|| true` and this comment.
+      - name: Formatting (advisory)
+        run: dart format --output=none --set-exit-if-changed lib/ tool/ || true
+
+      - name: Analyzer
+        run: flutter analyze --no-fatal-infos
+
+      # Runs before the tests on purpose: a missing translation key is the one
+      # failure that reaches users looking like a rendering bug rather than a
+      # crash, and it costs a second to catch.
+      - name: Translation keys
+        run: dart run tool/check_translations.dart
+
+      - name: Tests
+        run: flutter test --reporter expanded
+
+  # A real compile, because `flutter analyze` does not catch a broken Gradle
+  # file, a missing native symbol or a plugin that fails to build — and those
+  # are exactly what a dependency bump breaks.
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Gradle's own caches, which flutter-action does not cover — it caches the
+      # Flutter SDK and the pub cache, and an Android build spends most of its
+      # time below both. Keyed on the Gradle files so a dependency change gets a
+      # cold cache and everything else gets a warm one.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - run: touch .env
+      - run: flutter pub get
+      # Debug, not release: this proves the tree compiles. Signing a release
+      # needs secrets a fork's pull request cannot have, and gating CI on them
+      # would mean no outside contribution could ever go green.
+      - run: flutter build apk --debug
+
+  # The same argument as build-android, applied to the desktop side: a broken
+  # CMakeLists, a plugin with no Linux implementation or a missing system
+  # library is invisible to the analyzer and only surfaces on release day, in
+  # the job that is supposed to be publishing.
+  #
+  # Linux only, on purpose. A windows-latest runner bills at twice the Linux
+  # rate and its builds are the slowest of the three, which would roughly
+  # triple the cost of every pull request to catch a narrow class of
+  # Windows-only breakage. Most desktop plugin failures are not platform
+  # specific, and Linux catches those for the price of the cheapest runner
+  # GitHub sells. If Windows-only breakage ever actually reaches a release,
+  # that is the evidence for adding the job — not this comment.
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      # Some transitive native dependencies still declare a cmake_minimum_required
+      # below 3.5, which current CMake refuses outright. Mirrors release.yml.
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Kept in step with the same list in release.yml's linux job; a build that
+      # goes green here and red there teaches nobody anything.
+      - name: Install Linux desktop + plugin system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libmpv-dev mpv \
+            libsecret-1-dev libjsoncpp-dev libsecret-1-0
+
+      - run: touch .env
+      - run: flutter pub get
+      - run: flutter build linux --debug

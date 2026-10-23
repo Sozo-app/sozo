@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/onboarding/data/onboarding_posters.dart';
@@ -13,10 +14,23 @@ const List<double> _speeds = [1.0, 0.74, 1.22, 0.9, 1.1];
 /// artwork reads as the same slide again. Rows moving against each other also
 /// echo the shelves the catalogue itself is laid out in.
 class AnimeRibbons extends StatefulWidget {
-  const AnimeRibbons({super.key, this.rows = 6, this.tilesPerRow = 11});
+  const AnimeRibbons({
+    super.key,
+    this.rows = 6,
+    this.tilesPerRow = 11,
+    this.fadeBottom = true,
+    this.running,
+  });
 
   final int rows;
   final int tilesPerRow;
+
+  /// Off where the page already fades the ribbons into its background.
+  final bool fadeBottom;
+
+  /// Starts and stops the drift from outside, as the intro does mid-swipe.
+  /// Null: it drifts whenever animations are on.
+  final ValueListenable<bool>? running;
 
   @override
   State<AnimeRibbons> createState() => _AnimeRibbonsState();
@@ -27,10 +41,44 @@ class _AnimeRibbonsState extends State<AnimeRibbons>
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 48),
-  )..repeat();
+  );
+  bool _reduced = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.running?.addListener(_sync);
+  }
+
+  @override
+  void didUpdateWidget(AnimeRibbons old) {
+    super.didUpdateWidget(old);
+    if (old.running == widget.running) return;
+    old.running?.removeListener(_sync);
+    widget.running?.addListener(_sync);
+    _sync();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduced = MediaQuery.disableAnimationsOf(context);
+    _sync();
+  }
+
+  // Stopped, not muted: a muted ticker's clock keeps counting, so the wall
+  // jumped ahead by however long it had been held once it was let go.
+  void _sync() {
+    if (_reduced || !(widget.running?.value ?? true)) {
+      _controller.stop();
+    } else if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+  }
 
   @override
   void dispose() {
+    widget.running?.removeListener(_sync);
     _controller.dispose();
     super.dispose();
   }
@@ -50,6 +98,29 @@ class _AnimeRibbonsState extends State<AnimeRibbons>
           final tileWidth = rowHeight * _coverRatio;
           final strip = (tileWidth + _gap) * widget.tilesPerRow;
 
+          final ribbons = Column(
+            children: [
+              for (var r = 0; r < widget.rows; r++) ...[
+                if (r > 0) const SizedBox(height: _gap),
+                SizedBox(
+                  height: rowHeight,
+                  child: _Ribbon(
+                    controller: _controller,
+                    covers: _coversFor(r),
+                    // Odd rows travel the other way. Everything drifting the
+                    // same direction looks like one sheet being dragged.
+                    reverse: r.isOdd,
+                    speed: _speeds[r % _speeds.length],
+                    strip: strip,
+                    tileWidth: tileWidth,
+                    tileHeight: rowHeight,
+                    phase: r / widget.rows,
+                  ),
+                ),
+              ],
+            ],
+          );
+          if (!widget.fadeBottom) return ribbons;
           return ShaderMask(
             blendMode: BlendMode.dstIn,
             shaderCallback: (rect) => const LinearGradient(
@@ -58,28 +129,7 @@ class _AnimeRibbonsState extends State<AnimeRibbons>
               colors: [Colors.white, Colors.white, Colors.transparent],
               stops: [0, 0.4, 1],
             ).createShader(rect),
-            child: Column(
-              children: [
-                for (var r = 0; r < widget.rows; r++) ...[
-                  if (r > 0) const SizedBox(height: _gap),
-                  SizedBox(
-                    height: rowHeight,
-                    child: _Ribbon(
-                      controller: _controller,
-                      covers: _coversFor(r),
-                      // Odd rows travel the other way. Everything drifting the
-                      // same direction looks like one sheet being dragged.
-                      reverse: r.isOdd,
-                      speed: _speeds[r % _speeds.length],
-                      strip: strip,
-                      tileWidth: tileWidth,
-                      tileHeight: rowHeight,
-                      phase: r / widget.rows,
-                    ),
-                  ),
-                ],
-              ],
-            ),
+            child: ribbons,
           );
         },
       ),
@@ -116,7 +166,7 @@ class _Ribbon extends StatelessWidget {
       // unbounded — inside the row's constraints it would overflow every frame.
       child: OverflowBox(
         maxWidth: double.infinity,
-        alignment: Alignment.centerLeft,
+        alignment: AlignmentDirectional.centerStart,
         child: AnimatedBuilder(
           animation: controller,
           builder: (context, child) {
@@ -124,30 +174,33 @@ class _Ribbon extends StatelessWidget {
             final dx = reverse ? -t * strip : t * strip - strip;
             return Transform.translate(offset: Offset(dx, 0), child: child);
           },
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var pass = 0; pass < 2; pass++)
-                for (final cover in covers)
-                  Padding(
-                    padding: const EdgeInsets.only(right: _gap),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: Image.asset(
-                        cover,
-                        width: tileWidth,
-                        height: tileHeight,
-                        fit: BoxFit.cover,
-                        cacheWidth: (tileWidth * devicePixelRatio).round(),
-                        errorBuilder: (_, _, _) => SizedBox(
+          // Its own layer, like the poster wall's columns.
+          child: RepaintBoundary(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var pass = 0; pass < 2; pass++)
+                  for (final cover in covers)
+                    Padding(
+                      padding: const EdgeInsetsDirectional.only(end: _gap),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: Image.asset(
+                          cover,
                           width: tileWidth,
                           height: tileHeight,
-                          child: ColoredBox(color: AppColors.surface),
+                          fit: BoxFit.cover,
+                          cacheWidth: (tileWidth * devicePixelRatio).round(),
+                          errorBuilder: (_, _, _) => SizedBox(
+                            width: tileWidth,
+                            height: tileHeight,
+                            child: ColoredBox(color: AppColors.surface),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

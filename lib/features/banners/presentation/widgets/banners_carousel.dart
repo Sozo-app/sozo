@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -13,6 +15,7 @@ class BannersCarousel extends StatelessWidget {
     required this.placement,
     this.height = 150,
     this.padding = const EdgeInsets.symmetric(vertical: 10),
+    this.reserveWhileLoading = true,
   });
 
   final String placement;
@@ -22,19 +25,41 @@ class BannersCarousel extends StatelessWidget {
   /// collapses to `SizedBox.shrink()` with no leftover gap in the feed.
   final EdgeInsets padding;
 
+  /// Whether to hold [height] open while the request is in flight.
+  ///
+  /// True is right on the home feed, where a banner is the normal case and
+  /// reserving the space stops the rows below jumping when it lands.
+  ///
+  /// False is right on detail, where it is the opposite: unless an admin has
+  /// created a `detail_top` banner — usually nobody has — every detail page
+  /// held a 130px void between the action row and the tab strip and collapsed
+  /// it a few hundred milliseconds later, which is exactly when the poster
+  /// was settling into the header. The page moved under the animation for a
+  /// banner that does not exist.
+  final bool reserveWhileLoading;
+
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
       create: (_) => getIt<BannersBloc>()..add(BannersLoad(placement)),
-      child: _CarouselView(height: height, padding: padding),
+      child: _CarouselView(
+        height: height,
+        padding: padding,
+        reserveWhileLoading: reserveWhileLoading,
+      ),
     );
   }
 }
 
 class _CarouselView extends StatefulWidget {
-  const _CarouselView({required this.height, required this.padding});
+  const _CarouselView({
+    required this.height,
+    required this.padding,
+    required this.reserveWhileLoading,
+  });
   final double height;
   final EdgeInsets padding;
+  final bool reserveWhileLoading;
 
   @override
   State<_CarouselView> createState() => _CarouselViewState();
@@ -70,32 +95,41 @@ class _CarouselViewState extends State<_CarouselView> {
     return BlocBuilder<BannersBloc, BannersState>(
       builder: (context, state) {
         if (state.loading && state.items.isEmpty) {
-          return SizedBox(height: widget.height);
+          return SizedBox(
+            height: widget.reserveWhileLoading ? widget.height : 0,
+          );
         }
         if (state.items.isEmpty) {
           return const SizedBox.shrink();
         }
-        return Padding(
-          padding: widget.padding,
-          child: SizedBox(
-            height: widget.height,
-            child: PageView.builder(
-              controller: _controller,
-              itemCount: state.items.length,
-              onPageChanged: (index) {
-                _trackView(context, state.items[index]);
-              },
-              itemBuilder: (context, index) {
-                final item = state.items[index];
-                if (index == 0) _trackView(context, item);
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: _BannerCard(
-                    item: item,
-                    onTap: () => _onTap(context, item),
-                  ),
-                );
-              },
+        // Grows in when the space was not reserved, so a banner that does
+        // arrive does not shove the page down in one frame.
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: widget.padding,
+            child: SizedBox(
+              height: widget.height,
+              child: PageView.builder(
+                controller: _controller,
+                itemCount: state.items.length,
+                onPageChanged: (index) {
+                  _trackView(context, state.items[index]);
+                },
+                itemBuilder: (context, index) {
+                  final item = state.items[index];
+                  if (index == 0) _trackView(context, item);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: _BannerCard(
+                      item: item,
+                      onTap: () => _onTap(context, item),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
         );
@@ -120,22 +154,30 @@ class _BannerCard extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            CachedNetworkImage(
-              imageUrl: item.imageUrl,
-              fit: BoxFit.cover,
-              errorWidget: (_, _, _) => ColoredBox(
-                color: AppColors.surfaceVariant,
-              ),
+            // Decoded near the card's size. Banners are uploaded as print
+            // artwork — the detail page's was 3508 by 2480, 35 MB decoded,
+            // a third of the whole image cache and most of a second to upload
+            // — for a card a phone draws at under a thousand pixels wide.
+            // Wide enough to cover the card for any artwork up to 2:1.
+            LayoutBuilder(
+              builder: (context, box) {
+                final dpr = MediaQuery.devicePixelRatioOf(context);
+                final width = math.max(box.maxWidth, box.maxHeight * 2);
+                return CachedNetworkImage(
+                  imageUrl: item.imageUrl,
+                  fit: BoxFit.cover,
+                  memCacheWidth: width.isFinite ? (width * dpr).round() : null,
+                  errorWidget: (_, _, _) =>
+                      ColoredBox(color: AppColors.surfaceVariant),
+                );
+              },
             ),
             Container(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.bottomCenter,
                   end: Alignment.topCenter,
-                  colors: [
-                    Color(0xCC000000),
-                    Color(0x00000000),
-                  ],
+                  colors: [Color(0xCC000000), Color(0x00000000)],
                 ),
               ),
             ),

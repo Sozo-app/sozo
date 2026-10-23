@@ -1,5 +1,7 @@
 package com.soplay.sozo.manga
 
+import com.soplay.sozo.ExtensionFailure
+
 import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
@@ -44,8 +46,12 @@ object MangaRuntime {
      * version), so it gets a fresh loader — this just stops the stale instances
      * from shadowing it.
      */
-    fun evictSources(sourceIds: List<String>) {
-        synchronized(this) { sourceIds.forEach { sourceCache.remove(it) } }
+    fun evictSources(sourceIds: List<String>, apkPaths: List<String> = emptyList()) {
+        synchronized(this) {
+            sourceIds.forEach { sourceCache.remove(it) }
+            loadedApks.removeAll(apkPaths.toSet())
+            lastError = null
+        }
     }
 
     /**
@@ -112,7 +118,7 @@ object MangaRuntime {
                 val clazz = loader.loadClass(className)
                 clazz.getDeclaredConstructor().newInstance()
             } catch (t: Throwable) {
-                lastError = "instantiate $className: ${t.javaClass.simpleName}: ${t.message}"
+                lastError = "instantiate $className: ${ExtensionFailure.describe(t)}"
                 Log.e(TAG, "instantiate $className failed", t)
                 continue
             }

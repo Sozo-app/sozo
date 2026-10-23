@@ -3,15 +3,19 @@ import 'dart:async';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:soplay/features/detail/presentation/pages/player_controls_page.dart';
+import 'package:soplay/features/detail/presentation/widgets/player_info_fields_sheet.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/player/media_controller.dart'
     show warmUpPlayerEngine;
 import 'package:soplay/core/player/player_engine.dart';
+import 'package:soplay/core/player/quality_preference.dart';
 import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/core/subtitles/subtitle_languages.dart';
 import 'package:soplay/features/detail/domain/entities/subtitle_style.dart';
 import 'package:soplay/features/detail/presentation/widgets/player_engine_sheet.dart';
+import 'package:soplay/features/detail/presentation/widgets/subtitle_size_control.dart';
 import 'package:soplay/features/profile/presentation/widgets/settings_tiles.dart';
 
 /// Settings → Player. Every control here seeds a knob that already exists
@@ -46,11 +50,14 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
   late bool _askOnPlay;
   late double _speed;
   late String _fit;
+  late int _preferredQuality;
   late bool _autoNext;
+  late bool _startPaused;
   late int _seekSeconds;
   late double _boost;
   late bool _brightnessGesture;
   late bool _volumeGesture;
+  late bool _heroTrailer;
   late bool _keepScreenOn;
   late bool _incognito;
   late bool _autoSkipIntro;
@@ -84,13 +91,16 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
     _askOnPlay = _hive.askEngineOnPlay;
     _speed = _hive.getDefaultPlaybackSpeed();
     _fit = _hive.getDefaultPlayerFit();
+    _preferredQuality = _hive.preferredQuality;
     _autoNext = _hive.autoPlayNextEpisode;
+    _startPaused = _hive.startPaused;
     _incognito = _hive.isIncognito;
     _autoSkipIntro = _hive.autoSkipIntro;
     _seekSeconds = _hive.getDoubleTapSeekSeconds();
     _boost = _hive.getLongPressBoost();
     _brightnessGesture = _hive.brightnessGestureEnabled;
     _volumeGesture = _hive.volumeGestureEnabled;
+    _heroTrailer = _hive.heroTrailerAutoplay;
     _keepScreenOn = _hive.keepScreenOn;
     _subtitle = _hive.getSubtitleStyle();
     _autoTranslate = _hive.getSubtitleAutoTranslate();
@@ -127,6 +137,12 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
     'cover' => 'player.fit_fill'.tr(),
     'fill' => 'player.fit_stretch'.tr(),
     _ => 'player.fit_original'.tr(),
+  };
+
+  String _qualityPreferenceLabel(int v) => switch (v) {
+    QualityPreference.auto => 'player.auto'.tr(),
+    QualityPreference.dataSaver => 'profile.quality_data_saver'.tr(),
+    _ => '${v}p',
   };
 
   String _speedLabel(double v) =>
@@ -219,6 +235,19 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                 },
               ),
               const SettingsDivider(),
+              SettingsDropdownTile<int>(
+                icon: Icons.high_quality_rounded,
+                title: 'profile.preferred_quality'.tr(),
+                subtitle: 'profile.preferred_quality_desc'.tr(),
+                value: _preferredQuality,
+                options: QualityPreference.choices,
+                labelOf: _qualityPreferenceLabel,
+                onChanged: (v) {
+                  setState(() => _preferredQuality = v);
+                  _hive.savePreferredQuality(v);
+                },
+              ),
+              const SettingsDivider(),
               SettingsSwitchTile(
                 icon: Icons.playlist_play_rounded,
                 title: 'profile.auto_next_episode'.tr(),
@@ -227,6 +256,17 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                 onChanged: (v) {
                   setState(() => _autoNext = v);
                   _hive.setAutoPlayNextEpisode(v);
+                },
+              ),
+              const SettingsDivider(),
+              SettingsSwitchTile(
+                icon: Icons.pause_circle_outline_rounded,
+                title: 'profile.start_paused'.tr(),
+                subtitle: 'profile.start_paused_desc'.tr(),
+                value: _startPaused,
+                onChanged: (v) {
+                  setState(() => _startPaused = v);
+                  _hive.setStartPaused(v);
                 },
               ),
               const SettingsDivider(),
@@ -296,6 +336,26 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                 },
               ),
               const SettingsDivider(),
+              // Reachable from Settings as well as from inside the player. A
+              // viewer who has hidden a control is looking for the screen that
+              // brings it back, and the player is the one place they may not
+              // want to be while they look.
+              SettingsNavTile(
+                icon: Icons.dashboard_customize_outlined,
+                title: 'player.layout_title'.tr(),
+                subtitle: 'player.layout_desc'.tr(),
+                onTap: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(builder: (_) => const PlayerControlsPage()),
+                ),
+              ),
+              const SettingsDivider(),
+              SettingsNavTile(
+                icon: Icons.info_outline_rounded,
+                title: 'player.info_fields_title'.tr(),
+                subtitle: 'player.info_fields_desc'.tr(),
+                onTap: () => PlayerInfoFieldsSheet.show(context),
+              ),
+              const SettingsDivider(),
               SettingsSwitchTile(
                 icon: Icons.brightness_6_rounded,
                 title: 'profile.brightness_gesture'.tr(),
@@ -315,6 +375,21 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                 onChanged: (v) {
                   setState(() => _volumeGesture = v);
                   _hive.setVolumeGestureEnabled(v);
+                },
+              ),
+              const SettingsDivider(),
+              // A video that starts on its own, on a page somebody opened to
+              // read — worth offering, worth being able to refuse. Turning it
+              // off stops a preview that is already playing, not just the next
+              // one.
+              SettingsSwitchTile(
+                icon: Icons.movie_filter_rounded,
+                title: 'profile.hero_trailer'.tr(),
+                subtitle: 'profile.hero_trailer_desc'.tr(),
+                value: _heroTrailer,
+                onChanged: (v) {
+                  setState(() => _heroTrailer = v);
+                  _hive.setHeroTrailerAutoplay(v);
                 },
               ),
             ],
@@ -338,14 +413,18 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
               SettingsDropdownTile<String>(
                 icon: Icons.language_rounded,
                 title: 'player.translate_to'.tr(),
-                value: kSubtitleTranslateLanguages
-                        .any((l) => l.$1 == _translateLang)
+                value:
+                    kSubtitleTranslateLanguages.any(
+                      (l) => l.$1 == _translateLang,
+                    )
                     ? _translateLang
                     : 'uz',
                 options: [for (final l in kSubtitleTranslateLanguages) l.$1],
                 labelOf: (v) => kSubtitleTranslateLanguages
-                    .firstWhere((l) => l.$1 == v,
-                        orElse: () => kSubtitleTranslateLanguages.first)
+                    .firstWhere(
+                      (l) => l.$1 == v,
+                      orElse: () => kSubtitleTranslateLanguages.first,
+                    )
                     .$2,
                 onChanged: (v) {
                   setState(() => _translateLang = v);
@@ -362,14 +441,35 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
           const SizedBox(height: 10),
           SettingsCard(
             children: [
-              SettingsDropdownTile<double>(
-                icon: Icons.format_size_rounded,
-                title: 'player.font_size'.tr(),
-                value: _subtitle.fontSize,
-                options: const [12, 14, 16, 18, 20, 24, 28, 32],
-                labelOf: (v) => v.toInt().toString(),
-                onChanged: (v) =>
-                    _saveSubtitle(_subtitle.copyWith(fontSize: v)),
+              Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(16, 11, 16, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const SettingsLeadingChip(
+                          icon: Icons.format_size_rounded,
+                        ),
+                        const SizedBox(width: 14),
+                        Text(
+                          'player.font_size'.tr(),
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    SubtitleSizeControl(
+                      fontSize: _subtitle.fontSize,
+                      onChanged: (v) =>
+                          _saveSubtitle(_subtitle.copyWith(fontSize: v)),
+                    ),
+                  ],
+                ),
               ),
               const SettingsDivider(),
               SettingsDropdownTile<SubtitleEdge>(
@@ -472,6 +572,7 @@ class _SubtitlePreview extends StatelessWidget {
           style: TextStyle(
             color: color,
             fontSize: style.fontSize,
+            fontFamily: style.font.family,
             fontWeight: style.bold ? FontWeight.w700 : FontWeight.w400,
             shadows: switch (style.edge) {
               SubtitleEdge.none => const <Shadow>[],
@@ -533,7 +634,7 @@ class _SubtitleColorRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 11, 12, 11),
+      padding: const EdgeInsetsDirectional.fromSTEB(16, 11, 12, 11),
       child: Row(
         children: [
           Container(
@@ -566,7 +667,7 @@ class _SubtitleColorRow extends StatelessWidget {
               child: Container(
                 width: 22,
                 height: 22,
-                margin: const EdgeInsets.only(left: 7),
+                margin: const EdgeInsetsDirectional.only(start: 7),
                 decoration: BoxDecoration(
                   color: Color(c),
                   shape: BoxShape.circle,
@@ -592,7 +693,7 @@ class _SubtitleOpacityRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+      padding: const EdgeInsetsDirectional.fromSTEB(16, 4, 12, 4),
       child: Row(
         children: [
           Container(
@@ -665,7 +766,7 @@ class _EngineRow extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
+          padding: const EdgeInsetsDirectional.fromSTEB(16, 12, 14, 12),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

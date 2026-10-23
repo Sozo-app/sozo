@@ -1,31 +1,25 @@
+import 'package:soplay/core/content/catalogue.dart';
+import 'package:soplay/core/content/catalogue_logo.dart';
 import 'dart:async';
 import 'dart:ui';
 
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
-import 'package:soplay/core/navigation/app_tab.dart';
-import 'package:soplay/core/navigation/nav_controller.dart';
 import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
-import 'package:soplay/features/download/data/download_service.dart';
-import 'package:soplay/features/download/domain/entities/download_item.dart';
+import 'package:soplay/features/download/domain/entities/download_status.dart';
+import 'package:soplay/features/download/domain/usecases/get_downloads_usecase.dart';
 import 'package:soplay/features/home/presentation/bloc/home/home_bloc.dart';
 import 'package:soplay/features/home/presentation/bloc/home/home_event.dart';
 import 'package:soplay/features/notifications/domain/repositories/notifications_repository.dart';
-import 'package:soplay/features/profile/domain/entities/provider_entity.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_bloc.dart';
-import 'package:soplay/features/profile/presentation/bloc/provider_event.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_state.dart';
-import 'package:soplay/features/profile/presentation/pages/profile_page.dart';
-import 'package:soplay/features/streak/data/streak_service.dart';
-import 'package:soplay/features/streak/domain/entities/streak_state.dart';
-import 'package:soplay/features/streak/presentation/widgets/streak_badge.dart';
+import 'package:soplay/features/profile/presentation/widgets/provider_quick_switch.dart';
 
 class HomeTopBar extends StatelessWidget {
   const HomeTopBar({super.key, required this.blurProgress});
@@ -37,44 +31,21 @@ class HomeTopBar extends StatelessWidget {
     final topPad = MediaQuery.of(context).padding.top;
     final progress = blurProgress.clamp(0.0, 1.0);
 
-    // The bar reports state. It does not navigate.
-    //
-    // It had grown to five permanent actions beside the wordmark, source pill
-    // and streak, which overflowed a 411dp phone by 18px and had to be scaled
-    // down to fit — a row that shrinks to survive is a row with too much in it.
-    // Every destination came out: search is already a default bottom tab, and
-    // watch party, AniList and Live TV moved to Profile, which is where a place
-    // you visit occasionally belongs. What is left is what TELLS you something
-    // without being opened — the live source, the streak, a download in flight,
-    // an unread count.
+    // Stable destinations: badges change, actions do not disappear or shrink.
+    const iconPad = 12.0;
     final compact = MediaQuery.sizeOf(context).width < 430;
-    final iconPad = compact ? 6.0 : 8.0;
-
     final actions = <Widget>[
-      // First, and deliberately. This is the only place a viewer will notice
-      // that history is being suppressed — the player's sheet is not somewhere
-      // anyone opens to check. Renders nothing when incognito is off.
       _IncognitoIndicator(pad: iconPad),
       DesktopRefreshButton(
         color: AppColors.textPrimary,
         onRefresh: () => context.read<HomeBloc>().add(HomeLoad(silent: true)),
       ),
-      // Streak sits with the other status, not next to the source pill.
-      // Grouping the two things that report a count — a streak and an unread
-      // badge — puts every "here is where you stand" signal in one place and
-      // leaves the left side to say only what it is: the app, and the source.
-      const StreakBadge(),
       _DownloadIndicator(pad: iconPad),
-      _AnilistShortcut(pad: iconPad),
-      // Search rides next to AniList, but yields to a live streak: when the
-      // streak badge is showing its count the row is already full, so the
-      // search icon steps aside and lives where it always has — the bottom tab.
-      _SearchShortcut(pad: iconPad),
       _NotificationsIndicator(pad: iconPad),
     ];
 
     final bar = Padding(
-      padding: EdgeInsets.fromLTRB(20, topPad + 10, 12, 10),
+      padding: EdgeInsetsDirectional.fromSTEB(20, topPad + 10, 12, 10),
       child: Row(
         children: [
           Text(
@@ -88,24 +59,14 @@ class HomeTopBar extends StatelessWidget {
             ),
           ),
           SizedBox(width: compact ? 8 : 10),
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: compact ? 116 : 170),
-            child: const _ProviderSwitcher(),
-          ),
-          // The last line of defence: a transient download badge, a long streak
-          // count or a large system font can still outgrow what is left, and a
-          // strip that scales a few percent reads better than a yellow bar.
-          // Expanded, not Flexible: a loose child shrinks to its own width and
-          // then sits wherever the row left it, so the strip floated mid-bar
-          // with dead space to its right. Filling the remainder is what lets
-          // centerRight actually pin it to the edge.
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerRight,
-              child: Row(mainAxisSize: MainAxisSize.min, children: actions),
+          const Expanded(
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: _ProviderSwitcher(),
             ),
           ),
+          const SizedBox(width: 4),
+          ...actions,
         ],
       ),
     );
@@ -178,339 +139,55 @@ class _ProviderSwitcher extends StatelessWidget {
       builder: (context, state) {
         if (state is! ProviderLoaded) return const SizedBox.shrink();
         final current = state.currentProvider;
+        final catalogue = Catalogue.fromId(state.currentProviderId);
         return Material(
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(20),
-            onTap: () => _openSwitcher(context, state),
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(5, 4, 7, 4),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _ProviderLogo(image: current?.image ?? '', size: 22),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      current?.name ?? '—',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+            onTap: () => openProviderQuickSwitch(context),
+            // Keep a 48dp touch target without making the visible pill bulky.
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 36, maxWidth: 180),
+                padding: const EdgeInsetsDirectional.fromSTEB(8, 4, 8, 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (catalogue != null)
+                      CatalogueLogo(catalogue: catalogue, size: 22)
+                    else
+                      ProviderLogo(image: current?.image ?? '', size: 22),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        catalogue?.labelKey.tr() ?? current?.name ?? '—',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 2),
-                  const Icon(
-                    Icons.keyboard_arrow_down_rounded,
-                    color: AppColors.textHint,
-                    size: 18,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// Offline, a favourited server provider is dropped rather than offered —
-  /// picking it from the quick switcher would break the home screen. If that
-  /// leaves nothing, the caller falls through to the full picker, which
-  /// explains the outage.
-  List<ProviderEntity> _resolveFavorites(ProviderLoaded state) {
-    final favIds = getIt<HiveService>().getFavoriteProviders();
-    final byId = {
-      for (final p in state.providers)
-        if (state.isUsable(p)) p.id: p,
-    };
-    return [
-      for (final id in favIds)
-        if (byId[id] != null) byId[id]!,
-    ];
-  }
-
-  Future<void> _openSwitcher(BuildContext context, ProviderLoaded state) async {
-    final bloc = context.read<ProviderBloc>();
-    final favorites = _resolveFavorites(state);
-    if (favorites.isEmpty) {
-      openProviderPicker(context, bloc);
-      return;
-    }
-    final result = await showAdaptiveModal<String>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => _ProviderQuickSwitchSheet(
-        favorites: favorites,
-        currentProviderId: state.currentProviderId,
-      ),
-    );
-    if (result == null || !context.mounted) return;
-    if (result == _kAllProvidersAction) {
-      openProviderPicker(context, bloc);
-    } else {
-      bloc.add(ProviderSelect(result));
-    }
-  }
-}
-
-const String _kAllProvidersAction = '__all_providers__';
-
-class _ProviderQuickSwitchSheet extends StatelessWidget {
-  const _ProviderQuickSwitchSheet({
-    required this.favorites,
-    required this.currentProviderId,
-  });
-
-  final List<ProviderEntity> favorites;
-  final String currentProviderId;
-
-  @override
-  Widget build(BuildContext context) {
-    final bottomPad = MediaQuery.paddingOf(context).bottom;
-    return SafeArea(
-      top: false,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 10),
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: AppColors.border,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 14),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-            child: Row(
-              children: [
-                const Icon(Icons.star, color: Colors.amber, size: 18),
-                const SizedBox(width: 8),
-                Text(
-                  'profile.favorites'.tr(),
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (isDesktopPlatform)
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 360),
-              child: ListView.builder(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: favorites.length,
-                itemBuilder: (context, i) => _favoriteProviderTile(
-                  context,
-                  favorites[i],
-                  currentProviderId,
-                ),
-              ),
-            )
-          else
-            Flexible(
-              child: ListView.builder(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: favorites.length,
-                itemBuilder: (context, i) => _favoriteProviderTile(
-                  context,
-                  favorites[i],
-                  currentProviderId,
+                    const SizedBox(width: 2),
+                    const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: AppColors.textHint,
+                      size: 18,
+                    ),
+                  ],
                 ),
               ),
             ),
-          Divider(color: AppColors.divider, height: 1),
-          ListTile(
-            leading: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: AppColors.surfaceVariant,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.apps_rounded,
-                color: AppColors.textSecondary,
-                size: 18,
-              ),
-            ),
-            title: Text(
-              'profile.all_providers'.tr(),
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            trailing: const Icon(
-              Icons.chevron_right_rounded,
-              color: AppColors.textHint,
-              size: 20,
-            ),
-            onTap: () => Navigator.of(context).pop(_kAllProvidersAction),
-          ),
-          SizedBox(height: bottomPad + 8),
-        ],
-      ),
-    );
-  }
-}
-
-Widget _favoriteProviderTile(
-  BuildContext context,
-  ProviderEntity p,
-  String currentProviderId,
-) {
-  final selected = p.id == currentProviderId;
-  return ListTile(
-    leading: _ProviderLogo(image: p.image, size: 36),
-    title: Text(
-      p.name,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        color: selected ? AppColors.textPrimary : AppColors.textSecondary,
-        fontSize: 14,
-        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-      ),
-    ),
-    trailing: selected
-        ? Icon(Icons.check_rounded, color: AppColors.primary, size: 20)
-        : null,
-    onTap: () => Navigator.of(context).pop(p.id),
-  );
-}
-
-class _ProviderLogo extends StatelessWidget {
-  const _ProviderLogo({required this.image, required this.size});
-
-  final String image;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    final fallback = Container(
-      width: size,
-      height: size,
-      color: AppColors.surfaceVariant,
-      alignment: Alignment.center,
-      child: Icon(
-        Icons.movie_filter_outlined,
-        color: AppColors.textHint,
-        size: size * 0.55,
-      ),
-    );
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: image.isEmpty
-          ? fallback
-          : Image.network(
-              image,
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => fallback,
-              loadingBuilder: (_, child, chunk) =>
-                  chunk == null ? child : fallback,
-            ),
-    );
-  }
-}
-
-/// A tap target that matches the notification bell: same 24px icon, same
-/// padding, so the row reads as one set of controls.
-class _TopBarIconButton extends StatelessWidget {
-  const _TopBarIconButton({
-    required this.child,
-    required this.onTap,
-    this.pad = 8,
-  });
-
-  final Widget child;
-  final VoidCallback onTap;
-  final double pad;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(24),
-        onTap: onTap,
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: pad, vertical: 10),
-          child: SizedBox(width: 24, height: 24, child: Center(child: child)),
-        ),
-      ),
-    );
-  }
-}
-
-class _AnilistShortcut extends StatelessWidget {
-  const _AnilistShortcut({this.pad = 8});
-
-  final double pad;
-
-  @override
-  Widget build(BuildContext context) {
-    return _TopBarIconButton(
-      pad: pad,
-      onTap: () => context.push('/anilist'),
-      child: SvgPicture.asset(
-        'assets/icons/anilist.svg',
-        width: 22,
-        height: 22,
-      ),
-    );
-  }
-}
-
-/// Search — but only while no streak is showing its count. A live streak fills
-/// the row, so search yields and stays a bottom tab; without one it rides here.
-class _SearchShortcut extends StatelessWidget {
-  const _SearchShortcut({this.pad = 8});
-
-  final double pad;
-
-  @override
-  Widget build(BuildContext context) {
-    final streak = getIt<StreakService>();
-    final loggedIn = getIt<HiveService>().isLoggedIn;
-    return ValueListenableBuilder<StreakState>(
-      valueListenable: streak.state,
-      builder: (context, state, _) {
-        final streakShowing = loggedIn && state.current > 0;
-        if (streakShowing) return const SizedBox.shrink();
-        return _TopBarIconButton(
-          pad: pad,
-          onTap: () {
-            if (!getIt<NavController>().goToId(TabId.search)) {
-              context.push('/cross-search');
-            }
-          },
-          child: const Icon(
-            Icons.search_rounded,
-            color: Colors.white,
-            size: 24,
           ),
         );
       },
@@ -623,7 +300,7 @@ class _NotificationsIndicatorState extends State<_NotificationsIndicator>
           _refresh(force: true);
         },
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: widget.pad, vertical: 10),
+          padding: EdgeInsets.symmetric(horizontal: widget.pad, vertical: 12),
           child: SizedBox(
             width: 24,
             height: 24,
@@ -686,9 +363,10 @@ class _DownloadIndicator extends StatefulWidget {
 
 class _DownloadIndicatorState extends State<_DownloadIndicator>
     with SingleTickerProviderStateMixin {
-  final DownloadService _service = getIt<DownloadService>();
+  final GetDownloadsUseCase _downloads = getIt<GetDownloadsUseCase>();
   late final AnimationController _pulse;
   bool _hasActive = false;
+  bool _reducedMotion = false;
   int _activeCount = 0;
 
   @override
@@ -698,20 +376,31 @@ class _DownloadIndicatorState extends State<_DownloadIndicator>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     );
-    _service.revision.addListener(_check);
+    _downloads.revision.addListener(_check);
     _check();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reducedMotion = MediaQuery.disableAnimationsOf(context);
+    if (_reducedMotion) {
+      _pulse.stop();
+    } else if (_hasActive && !_pulse.isAnimating) {
+      _pulse.repeat();
+    }
+  }
+
+  @override
   void dispose() {
-    _service.revision.removeListener(_check);
+    _downloads.revision.removeListener(_check);
     _pulse.dispose();
     super.dispose();
   }
 
   void _check() {
     if (!mounted) return;
-    final items = _service.getAll();
+    final items = _downloads();
     final active = items
         .where((i) => i.status == DownloadStatus.downloading)
         .length;
@@ -721,7 +410,7 @@ class _DownloadIndicatorState extends State<_DownloadIndicator>
         _hasActive = hasActive;
         _activeCount = active;
       });
-      if (hasActive) {
+      if (hasActive && !_reducedMotion) {
         _pulse.repeat();
       } else {
         _pulse.stop();
@@ -732,14 +421,13 @@ class _DownloadIndicatorState extends State<_DownloadIndicator>
 
   @override
   Widget build(BuildContext context) {
-    if (!_hasActive) return const SizedBox.shrink();
     return Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(24),
         onTap: () => context.push('/downloads'),
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: widget.pad, vertical: 10),
+          padding: EdgeInsets.symmetric(horizontal: widget.pad, vertical: 12),
           child: SizedBox(
             width: 24,
             height: 24,
@@ -752,37 +440,40 @@ class _DownloadIndicatorState extends State<_DownloadIndicator>
                     color: Color.lerp(
                       AppColors.primary,
                       Colors.white,
-                      (_pulse.value * 2 - 1).abs(),
+                      MediaQuery.disableAnimationsOf(context)
+                          ? 1
+                          : (_pulse.value * 2 - 1).abs(),
                     ),
                     size: 24,
                   ),
                 ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    constraints: const BoxConstraints(
-                      minWidth: 12,
-                      minHeight: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Center(
-                      child: Text(
-                        _activeCount > 9 ? '9+' : '$_activeCount',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 7,
-                          fontWeight: FontWeight.w900,
-                          height: 1,
+                if (_hasActive)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      constraints: const BoxConstraints(
+                        minWidth: 12,
+                        minHeight: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Center(
+                        child: Text(
+                          _activeCount > 9 ? '9+' : '$_activeCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 7,
+                            fontWeight: FontWeight.w900,
+                            height: 1,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
@@ -791,7 +482,6 @@ class _DownloadIndicatorState extends State<_DownloadIndicator>
     );
   }
 }
-
 
 /// Shown on the home bar whenever incognito is on.
 ///
@@ -864,18 +554,15 @@ class _IncognitoIndicatorState extends State<_IncognitoIndicator> {
   @override
   Widget build(BuildContext context) {
     if (!_hive.isIncognito) return const SizedBox.shrink();
-    return _TopBarIconButton(
-      pad: widget.pad,
-      onTap: _confirmOff,
-      child: Tooltip(
-        message: 'profile.incognito'.tr(),
-        child: Icon(
-          Icons.visibility_off_rounded,
-          // The one item in this bar that is a warning rather than a
-          // shortcut, so it does not wear the same colour as the rest.
-          color: AppColors.errorLight,
-          size: 22,
-        ),
+    return IconButton(
+      tooltip: 'profile.incognito'.tr(),
+      onPressed: _confirmOff,
+      icon: Icon(
+        Icons.visibility_off_rounded,
+        // The one item in this bar that is a warning rather than a
+        // shortcut, so it does not wear the same colour as the rest.
+        color: AppColors.errorLight,
+        size: 22,
       ),
     );
   }

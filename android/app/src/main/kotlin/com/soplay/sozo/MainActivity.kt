@@ -22,6 +22,7 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import com.soplay.sozo.widget.HomeWidgets
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -35,6 +36,7 @@ import com.soplay.sozo.manga.MangaHost
 import com.soplay.sozo.manga.MangaRepoManager
 import com.soplay.sozo.extensions.RepoFileIntent
 import com.soplay.sozo.preview.FramePreview
+import com.soplay.sozo.preview.HlsFramePreview
 import com.soplay.sozo.torrent.TorrentServerBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +49,11 @@ class MainActivity : FlutterFragmentActivity() {
     private val channelName = "soplay/pip"
     private val platformChannelName = "soplay/platform"
     private val downloadChannelName = "soplay/downloads"
+
+    // Its own scope rather than borrowing the CloudStream one: exporting a
+    // download is a multi-gigabyte byte copy, and sharing a scope with the
+    // plugin host would mean cancelling one cancels the other.
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val systemControlsChannelName = "soplay/system_controls"
     private val deeplinkSettingsChannelName = "soplay/deeplink_settings"
     private val actionBroadcastName = "com.soplay.sozo.PIP_ACTION"
@@ -65,6 +72,7 @@ class MainActivity : FlutterFragmentActivity() {
     private val cloudstreamChannelName = "soplay/cloudstream"
     private var cloudstreamChannel: MethodChannel? = null
     private var previewChannel: MethodChannel? = null
+    private var tilesChannel: MethodChannel? = null
     private val cloudstreamScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pluginHost by lazy {
         // CloudflareKiller is constructed by plugins with no arguments, so it
@@ -77,6 +85,18 @@ class MainActivity : FlutterFragmentActivity() {
         // throws NoClassDefFoundError on an OkHttp worker thread, which nothing
         // catches, and the process dies.
         CloudStreamApp.install(applicationContext)
+        // And the OTHER context, the one the library's own WebViewResolver
+        // reads. It is a different holder in a different package
+        // (com.lagradost.api), and it was never set.
+        //
+        // With it null, resolveUsingWebView throws "No base context in
+        // WebViewResolver" INSIDE a coroutine whose only handler is logError —
+        // so nothing propagates. The resolver then polls for its full sixty
+        // second timeout and returns nothing, and the screen says "no mirrors"
+        // after a minute of spinning. Twenty-four of the eighty-two plugins in
+        // the recommended repo reach that resolver, directly or through the
+        // filemoon / streamwish / filesim / watchsb extractors that use it.
+        com.lagradost.api.setContext(java.lang.ref.WeakReference(applicationContext))
         PluginHost(applicationContext)
     }
     private val repoManager by lazy { RepoManager(applicationContext, pluginHost) }
@@ -103,6 +123,14 @@ class MainActivity : FlutterFragmentActivity() {
     // attached when the intent arrives.
     private val repoFileChannelName = "soplay/repo_file"
     private var repoFileChannel: MethodChannel? = null
+
+    /// Owns the ExoPlayer instances that play encrypted streams. Held so the
+    /// engine going away releases them — an ExoPlayer that outlives its texture
+    /// keeps a decoder and a DRM session open, which on some devices is a
+    /// hardware resource the next playback cannot get.
+    private var drmPlayerHost: com.soplay.sozo.drm.DrmPlayerHost? = null
+    private var homeWidgetChannel: MethodChannel? = null
+    private var pendingWidgetAction: Map<String, Any?>? = null
     @Volatile private var pendingRepoFile: String? = null
 
     companion object {
@@ -122,6 +150,65 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Home screen widgets: the app sends a snapshot to draw, and hears
+        // about taps that opened it.
+        homeWidgetChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "sozo/home_widget"
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "update" -> {
+                        (call.arguments as? String)?.let {
+                            HomeWidgets.save(applicationContext, it)
+                        }
+                        result.success(true)
+                    }
+                    "takeLaunchAction" -> {
+                        result.success(pendingWidgetAction)
+                        pendingWidgetAction = null
+                    }
+                    // Whether this launcher can take a widget straight from the
+                    // app, and the ask itself: the launcher shows its own "add
+                    // to home screen" sheet. False where it cannot, so the app
+                    // explains the long-press route instead.
+                    "canPin" -> result.success(canPinWidgets())
+                    // How many of each are on the home screen now — how the app
+                    // learns a pin request was accepted.
+                    "placed" -> {
+                        val manager = android.appwidget.AppWidgetManager.getInstance(applicationContext)
+                        fun count(c: Class<*>) = runCatching {
+                            manager.getAppWidgetIds(android.content.ComponentName(applicationContext, c)).size
+                        }.getOrDefault(0)
+                        result.success(
+                            mapOf(
+                                "streak" to count(com.soplay.sozo.widget.StreakWidget::class.java),
+                                "continue" to count(com.soplay.sozo.widget.ContinueWidgetMedium::class.java) +
+                                    count(com.soplay.sozo.widget.ContinueWidgetSmall::class.java),
+                            ),
+                        )
+                    }
+                    "pin" -> {
+                        val provider = when (call.arguments as? String) {
+                            "streak" -> com.soplay.sozo.widget.StreakWidget::class.java
+                            "small" -> com.soplay.sozo.widget.ContinueWidgetSmall::class.java
+                            else -> com.soplay.sozo.widget.ContinueWidgetMedium::class.java
+                        }
+                        result.success(
+                            canPinWidgets() && runCatching {
+                                android.appwidget.AppWidgetManager.getInstance(applicationContext)
+                                    .requestPinAppWidget(
+                                        android.content.ComponentName(applicationContext, provider),
+                                        null,
+                                        null,
+                                    )
+                            }.getOrDefault(false),
+                        )
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
         methodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             channelName
@@ -148,11 +235,40 @@ class MainActivity : FlutterFragmentActivity() {
         platformChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "isTv" -> result.success(isLeanbackDevice())
+                "isEmulator" -> result.success(
+                    Build.HARDWARE == "goldfish" || Build.HARDWARE == "ranchu" ||
+                        Build.MODEL.startsWith("sdk_gphone") ||
+                        Build.MODEL.contains("Android SDK built for") ||
+                        Build.PRODUCT.startsWith("sdk_gphone")
+                )
                 "openExternalVideo" -> {
                     val url = call.argument<String>("url").orEmpty()
                     val title = call.argument<String>("title").orEmpty()
                     val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
-                    result.success(openExternalVideo(url, title, headers))
+                    val subtitles = call.argument<List<Map<String, String>>>("subtitles") ?: emptyList()
+                    result.success(openExternalVideo(url, title, headers, subtitles))
+                }
+                // The package an apk on disk would install as, or null when the
+                // file is not a readable apk. The in-app updater checks it before
+                // handing the file to the installer.
+                // After a refusal Android explains itself; after the second it
+                // stops asking and stops explaining, which is the only way to
+                // tell "denied for good" apart from "never asked".
+                "notificationRationale" -> result.success(
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        shouldShowRequestPermissionRationale(
+                            Manifest.permission.POST_NOTIFICATIONS
+                        )
+                )
+                "openNotificationSettings" -> result.success(openNotificationSettings())
+                "apkPackageName" -> {
+                    val path = call.argument<String>("path").orEmpty()
+                    val name = try {
+                        packageManager.getPackageArchiveInfo(path, 0)?.packageName
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    result.success(name)
                 }
                 else -> result.notImplemented()
             }
@@ -173,6 +289,7 @@ class MainActivity : FlutterFragmentActivity() {
                     val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
                     val kind = call.argument<String>("kind").orEmpty().ifBlank { "video" }
                     val pageUrls = call.argument<List<String>>("pageUrls") ?: emptyList()
+                    val imageHeaders = call.argument<List<Map<String, String>>>("imageHeaders") ?: emptyList()
                     val isManga = kind == "manga"
                     // Manga has no single url; require the destination folder + page urls instead.
                     val missingArgs = if (isManga) {
@@ -192,6 +309,10 @@ class MainActivity : FlutterFragmentActivity() {
                         .putExtra(DownloadForegroundService.EXTRA_LOCAL_PATH, localPath)
                         .putExtra(DownloadForegroundService.EXTRA_KIND, kind)
                         .putExtra(
+                            DownloadForegroundService.EXTRA_WIFI_ONLY,
+                            call.argument<Boolean>("wifiOnly") ?: false
+                        )
+                        .putExtra(
                             DownloadForegroundService.EXTRA_PAGE_URLS_JSON,
                             JSONArray(pageUrls).toString()
                         )
@@ -199,15 +320,39 @@ class MainActivity : FlutterFragmentActivity() {
                             DownloadForegroundService.EXTRA_HEADERS_JSON,
                             JSONObject(headers).toString()
                         )
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
+                        .putExtra(
+                            DownloadForegroundService.EXTRA_IMAGE_HEADERS_JSON,
+                            JSONArray(imageHeaders).toString()
+                        )
+                    // Android 12+ throws when a foreground service is started
+                    // from the background. Reported as `false` rather than left
+                    // to crash: the queue can then record why nothing happened,
+                    // instead of a download that silently never starts.
+                    val started = try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        true
+                    } catch (e: Exception) {
+                        false
                     }
-                    result.success(true)
+                    result.success(started)
                 }
                 "getDownloadStates" -> {
                     result.success(DownloadForegroundService.readStates(this))
+                }
+                // Free bytes on the volume the downloads live on.
+                //
+                // Dart has no portable API for this, and starting a two-gigabyte
+                // download onto a phone with 40 MB left breaks far more than
+                // this feature. `getUsableSpace` is what the app may actually
+                // write, which is not the same as the partition's free space on
+                // a device with a storage quota.
+                "freeSpaceBytes" -> {
+                    val dir = filesDir ?: cacheDir
+                    result.success(dir?.usableSpace ?: 0L)
                 }
                 "cancelDownload" -> {
                     val id = call.argument<String>("id").orEmpty()
@@ -217,6 +362,40 @@ class MainActivity : FlutterFragmentActivity() {
                             .putExtra(DownloadForegroundService.EXTRA_ID, id)
                     )
                     result.success(null)
+                }
+                "pauseDownload" -> {
+                    val id = call.argument<String>("id").orEmpty()
+                    startService(
+                        Intent(this, DownloadForegroundService::class.java)
+                            .setAction(DownloadForegroundService.ACTION_PAUSE)
+                            .putExtra(DownloadForegroundService.EXTRA_ID, id)
+                    )
+                    result.success(null)
+                }
+                // Copies a finished download into the shared Downloads folder,
+                // where a file manager, a USB cable or another player can
+                // actually reach it. Off the main thread: this is a byte copy
+                // of a file that is routinely several gigabytes, and doing it
+                // on the UI thread would freeze the app for the duration.
+                "exportToDownloads" -> {
+                    val path = call.argument<String>("path").orEmpty()
+                    val name = call.argument<String>("name").orEmpty()
+                    downloadScope.launch {
+                        val outcome = runCatching {
+                            DownloadExporter.exportToDownloads(applicationContext, path, name)
+                        }
+                        withContext(Dispatchers.Main) {
+                            outcome
+                                .onSuccess { result.success(it) }
+                                .onFailure {
+                                    result.error(
+                                        "export_failed",
+                                        it.message ?: "Could not save to Downloads",
+                                        null
+                                    )
+                                }
+                        }
+                    }
                 }
                 "removeDownloadState" -> {
                     val id = call.argument<String>("id").orEmpty()
@@ -256,6 +435,15 @@ class MainActivity : FlutterFragmentActivity() {
                     resetWindowBrightness()
                     result.success(true)
                 }
+                // Name resolution for the extension runtimes. Returns what is
+                // actually in force, which is not always what was asked for: a
+                // resolver that cannot be built falls back to the system one
+                // rather than leaving the app unable to reach anything.
+                "setExtensionDns" -> {
+                    val id = call.argument<String>("id")
+                    result.success(ExtensionDns.apply(applicationContext, id))
+                }
+                "getExtensionDns" -> result.success(ExtensionDns.current())
                 else -> result.notImplemented()
             }
         }
@@ -280,10 +468,19 @@ class MainActivity : FlutterFragmentActivity() {
         cloudstreamChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "listProviders" -> csAsync(result) { pluginHost.providersJson() }
+                // Which of these ids are installed, for the home-screen widget.
+                "hasSources" -> {
+                    val ids = call.argument<List<String>>("ids").orEmpty()
+                    csAsync(result) {
+                        repoManager.ensureLoaded()
+                        JSONArray(ids.filter { pluginHost.has(it) }).toString()
+                    }
+                }
                 "ensureLoaded" -> csAsync(result) {
                     repoManager.ensureLoaded(); pluginHost.providersJson()
                 }
                 "listRepos" -> csAsync(result) { repoManager.listReposJson() }
+                "installedPlugins" -> csAsync(result) { repoManager.installedPluginsJson() }
                 "removeRepo" -> {
                     val url = call.argument<String>("url").orEmpty()
                     csAsync(result) { repoManager.removeRepo(url) }
@@ -340,33 +537,33 @@ class MainActivity : FlutterFragmentActivity() {
                 "getMainPage" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { pluginHost.getMainPageJson(provider, page) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.getMainPageJson(provider, page) }
                 }
                 "getGenres" -> {
                     val provider = call.argument<String>("provider").orEmpty()
-                    csAsync(result) { pluginHost.getGenresJson(provider) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.getGenresJson(provider) }
                 }
                 "getSection" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { pluginHost.getSectionJson(provider, data, page) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.getSectionJson(provider, data, page) }
                 }
                 "search" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val query = call.argument<String>("query").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { pluginHost.searchJson(provider, query, page) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.searchJson(provider, query, page) }
                 }
                 "load" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val url = call.argument<String>("url").orEmpty()
-                    csAsync(result) { pluginHost.loadJson(provider, url) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.loadJson(provider, url) }
                 }
                 "loadLinks" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
-                    csAsync(result) { pluginHost.loadLinksJson(provider, data) }
+                    csAsync(result) { repoManager.ensureLoaded(); pluginHost.loadLinksJson(provider, data) }
                 }
                 "cloudflareInfo" -> {
                     val id = call.argument<String>("id").orEmpty()
@@ -383,6 +580,14 @@ class MainActivity : FlutterFragmentActivity() {
         aniyomiChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "listProviders" -> csAsync(result) { aniyomiHost.providersJson(call.langs()) }
+                // Which of these ids are installed, for the home-screen widget.
+                "hasSources" -> {
+                    val ids = call.argument<List<String>>("ids").orEmpty()
+                    csAsync(result) {
+                        aniyomiRepoManager.ensureLoaded()
+                        JSONArray(ids.filter { aniyomiHost.has(it) }).toString()
+                    }
+                }
                 "ensureLoaded" -> csAsync(result) {
                     aniyomiRepoManager.ensureLoaded(); aniyomiHost.providersJson(call.langs())
                 }
@@ -433,33 +638,44 @@ class MainActivity : FlutterFragmentActivity() {
                 "getMainPage" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { aniyomiHost.getMainPageJson(provider, page) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.getMainPageJson(provider, page) }
                 }
                 "getSection" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { aniyomiHost.getSectionJson(provider, data, page) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.getSectionJson(provider, data, page) }
                 }
                 "getGenres" -> {
                     val provider = call.argument<String>("provider").orEmpty()
-                    csAsync(result) { aniyomiHost.getGenresJson(provider) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.getGenresJson(provider) }
                 }
                 "search" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val query = call.argument<String>("query").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { aniyomiHost.searchJson(provider, query, page) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.searchJson(provider, query, page) }
                 }
                 "load" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val url = call.argument<String>("url").orEmpty()
-                    csAsync(result) { aniyomiHost.loadJson(provider, url) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.loadJson(provider, url) }
                 }
                 "loadLinks" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
-                    csAsync(result) { aniyomiHost.loadLinksJson(provider, data) }
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.loadLinksJson(provider, data) }
+                }
+                "getPreferences" -> {
+                    val provider = call.argument<String>("provider").orEmpty()
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.getPrefsJson(provider) }
+                }
+                "setPreference" -> {
+                    val provider = call.argument<String>("provider").orEmpty()
+                    val key = call.argument<String>("key").orEmpty()
+                    val type = call.argument<String>("type").orEmpty()
+                    val value = call.argument<Any>("value")
+                    csAsync(result) { aniyomiRepoManager.ensureLoaded(); aniyomiHost.setPrefJson(provider, key, value, type) }
                 }
                 "cloudflareInfo" -> {
                     val id = call.argument<String>("id").orEmpty()
@@ -476,6 +692,14 @@ class MainActivity : FlutterFragmentActivity() {
         mangaChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "listProviders" -> csAsync(result) { mangaHost.providersJson(call.langs()) }
+                // Which of these ids are installed, for the home-screen widget.
+                "hasSources" -> {
+                    val ids = call.argument<List<String>>("ids").orEmpty()
+                    csAsync(result) {
+                        mangaRepoManager.ensureLoaded()
+                        JSONArray(ids.filter { mangaHost.has(it) }).toString()
+                    }
+                }
                 "ensureLoaded" -> csAsync(result) {
                     mangaRepoManager.ensureLoaded(); mangaHost.providersJson(call.langs())
                 }
@@ -526,44 +750,44 @@ class MainActivity : FlutterFragmentActivity() {
                 "getMainPage" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { mangaHost.getMainPageJson(provider, page) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.getMainPageJson(provider, page) }
                 }
                 "getSection" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { mangaHost.getSectionJson(provider, data, page) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.getSectionJson(provider, data, page) }
                 }
                 "getGenres" -> {
                     val provider = call.argument<String>("provider").orEmpty()
-                    csAsync(result) { mangaHost.getGenresJson(provider) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.getGenresJson(provider) }
                 }
                 "search" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val query = call.argument<String>("query").orEmpty()
                     val page = call.argument<Int>("page") ?: 1
-                    csAsync(result) { mangaHost.searchJson(provider, query, page) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.searchJson(provider, query, page) }
                 }
                 "load" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val url = call.argument<String>("url").orEmpty()
-                    csAsync(result) { mangaHost.loadJson(provider, url) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.loadJson(provider, url) }
                 }
                 "pageList" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val data = call.argument<String>("data").orEmpty()
-                    csAsync(result) { mangaHost.pageListJson(provider, data) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.pageListJson(provider, data) }
                 }
                 "getPreferences" -> {
                     val provider = call.argument<String>("provider").orEmpty()
-                    csAsync(result) { mangaHost.getPrefsJson(provider) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.getPrefsJson(provider) }
                 }
                 "setPreference" -> {
                     val provider = call.argument<String>("provider").orEmpty()
                     val key = call.argument<String>("key").orEmpty()
                     val type = call.argument<String>("type").orEmpty()
                     val value = call.argument<Any>("value")
-                    csAsync(result) { mangaHost.setPrefJson(provider, key, value, type) }
+                    csAsync(result) { mangaRepoManager.ensureLoaded(); mangaHost.setPrefJson(provider, key, value, type) }
                 }
                 "cloudflareInfo" -> {
                     val id = call.argument<String>("id").orEmpty()
@@ -589,6 +813,12 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
+        drmPlayerHost = com.soplay.sozo.drm.DrmPlayerHost(
+            applicationContext,
+            flutterEngine.renderer,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+
         previewChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "soplay/preview",
@@ -599,23 +829,82 @@ class MainActivity : FlutterFragmentActivity() {
                     val url = call.argument<String>("url").orEmpty()
                     val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
                     val warmMs = (call.argument<Number>("warmMs") ?: -1).toLong()
+                    val hls = call.argument<Boolean>("hls") == true
                     cloudstreamScope.launch {
-                        FramePreview.open(url, headers, warmMs)
-                        withContext(Dispatchers.Main) { result.success(true) }
+                        val token = call.argument<Number>("generation")?.toLong()
+                        val opened = if (hls) HlsFramePreview.open(applicationContext, url, token ?: 0L)
+                            else if (token != null) FramePreview.open(url, headers, warmMs, token)
+                            else FramePreview.open(url, headers, warmMs)
+                        withContext(Dispatchers.Main) { result.success(opened) }
                     }
                 }
                 "frame" -> {
                     val posMs = (call.argument<Number>("posMs") ?: 0).toLong()
+                    val hls = call.argument<Boolean>("hls") == true
                     cloudstreamScope.launch {
-                        val bytes = FramePreview.frame(posMs)
+                        val token = call.argument<Number>("generation")?.toLong()
+                        val bytes = if (hls) HlsFramePreview.frame(posMs, token ?: 0L)
+                            else if (token != null) FramePreview.frame(posMs, sessionId = token)
+                            else FramePreview.frame(posMs)
                         withContext(Dispatchers.Main) { result.success(bytes) }
                     }
                 }
                 // Off the platform thread like open/frame: close() can contend with a
                 // still-running open(), and blocking here would freeze the whole UI.
                 "close" -> {
+                    val hls = call.argument<Boolean>("hls") == true
                     cloudstreamScope.launch {
-                        FramePreview.close()
+                        val token = call.argument<Number>("generation")?.toLong()
+                        if (hls) HlsFramePreview.close(token ?: 0L)
+                        else if (token != null) FramePreview.close(token) else FramePreview.close()
+                        withContext(Dispatchers.Main) { result.success(true) }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Sharp zoom on a manga page. See PageTiles: the whole point is that
+        // nothing here ever holds a full-size bitmap, so every call is off the
+        // platform thread — a region of a large JPEG is tens of milliseconds
+        // and the reader is being panned while it runs.
+        tilesChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "soplay/tiles",
+        )
+        tilesChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "open" -> {
+                    val path = call.argument<String>("path").orEmpty()
+                    cloudstreamScope.launch {
+                        val opened = com.soplay.sozo.tiles.PageTiles.open(path)
+                        withContext(Dispatchers.Main) { result.success(opened) }
+                    }
+                }
+                "region" -> {
+                    val handle = (call.argument<Number>("handle") ?: 0).toLong()
+                    val left = (call.argument<Number>("left") ?: 0).toInt()
+                    val top = (call.argument<Number>("top") ?: 0).toInt()
+                    val right = (call.argument<Number>("right") ?: 0).toInt()
+                    val bottom = (call.argument<Number>("bottom") ?: 0).toInt()
+                    val sample = (call.argument<Number>("sampleSize") ?: 1).toInt()
+                    cloudstreamScope.launch {
+                        val bytes = com.soplay.sozo.tiles.PageTiles.region(
+                            handle, left, top, right, bottom, sample,
+                        )
+                        withContext(Dispatchers.Main) { result.success(bytes) }
+                    }
+                }
+                "close" -> {
+                    val handle = (call.argument<Number>("handle") ?: 0).toLong()
+                    cloudstreamScope.launch {
+                        com.soplay.sozo.tiles.PageTiles.close(handle)
+                        withContext(Dispatchers.Main) { result.success(true) }
+                    }
+                }
+                "closeAll" -> {
+                    cloudstreamScope.launch {
+                        com.soplay.sozo.tiles.PageTiles.closeAll()
                         withContext(Dispatchers.Main) { result.success(true) }
                     }
                 }
@@ -657,7 +946,8 @@ class MainActivity : FlutterFragmentActivity() {
     private fun openExternalVideo(
         url: String,
         title: String,
-        headers: Map<String, String>
+        headers: Map<String, String>,
+        subtitles: List<Map<String, String>> = emptyList(),
     ): Boolean {
         if (url.isBlank()) return false
         return try {
@@ -669,6 +959,18 @@ class MainActivity : FlutterFragmentActivity() {
                     val flat = ArrayList<String>(headers.size * 2)
                     headers.forEach { (k, v) -> flat.add(k); flat.add(v) }
                     putExtra("headers", flat.toTypedArray())
+                }
+                val subs = subtitles.mapNotNull { s ->
+                    val u = s["url"]?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+                    Uri.parse(u) to (s["label"] ?: "")
+                }
+                if (subs.isNotEmpty()) {
+                    // MX Player: every track, named, the first switched on.
+                    putExtra("subs", subs.map { it.first }.toTypedArray<android.os.Parcelable>())
+                    putExtra("subs.name", subs.map { it.second }.toTypedArray())
+                    putExtra("subs.enable", arrayOf<android.os.Parcelable>(subs.first().first))
+                    // VLC: one track.
+                    putExtra("subtitles_location", subs.first().first.toString())
                 }
             }
             val chooser = Intent.createChooser(intent, title.ifBlank { "Play with" })
@@ -684,7 +986,7 @@ class MainActivity : FlutterFragmentActivity() {
     private fun bridgePrefs() = getSharedPreferences("sozo_bridge", Context.MODE_PRIVATE)
 
     /** Control channel for the desktop-sharing bridge: enable/disable + status
-     *  (the shareable `http://<lan-ip>:8765` link). */
+     *  (the shareable `http://<lan-ip>:8765/?t=<token>` link). */
     private fun setupBridgeChannel(flutterEngine: FlutterEngine) {
         bridgeChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger, bridgeChannelName)
@@ -694,7 +996,12 @@ class MainActivity : FlutterFragmentActivity() {
                 "setEnabled" -> {
                     val enabled = call.argument<Boolean>("enabled") ?: false
                     bridgePrefs().edit().putBoolean("enabled", enabled).apply()
-                    if (enabled) startBridgeServer() else stopBridgeServer()
+                    if (enabled) {
+                        startBridgeServer()
+                    } else {
+                        stopBridgeServer()
+                        bridgePrefs().edit().remove("token").apply()
+                    }
                     result.success(bridgeStatus())
                 }
                 "getSharedProviders" -> result.success(sharedProvidersConfig())
@@ -738,18 +1045,46 @@ class MainActivity : FlutterFragmentActivity() {
     private fun bridgeStatus(): Map<String, Any?> {
         val running = bridgeServer != null
         val ip = localIpAddress()
+        val token = bridgeToken()
         return mapOf(
             "enabled" to running,
             "port" to bridgePort,
             "ip" to ip,
-            "link" to if (running && ip != null) "http://$ip:$bridgePort" else null,
+            // The token rides in the link so pasting it on the PC is still the
+            // whole setup; see BridgeServer for why every request needs it.
+            "link" to if (running && ip != null && token != null) {
+                "http://$ip:$bridgePort/?t=$token"
+            } else {
+                null
+            },
         )
+    }
+
+    /** The bridge's access token, or null when sharing is off. */
+    private fun bridgeToken(): String? =
+        bridgePrefs().getString("token", null)?.takeIf { it.isNotEmpty() }
+
+    /** A fresh random token, minted each time sharing is switched on so a link
+     *  handed out earlier stops working once the user turns sharing off. It is
+     *  kept while sharing stays on, so a restart does not break the PC's saved
+     *  link. */
+    private fun ensureBridgeToken(): String {
+        bridgeToken()?.let { return it }
+        val bytes = ByteArray(18)
+        java.security.SecureRandom().nextBytes(bytes)
+        val token = android.util.Base64.encodeToString(
+            bytes,
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+        )
+        bridgePrefs().edit().putString("token", token).apply()
+        return token
     }
 
     /** Start the local HTTP bridge so a same-Wi-Fi desktop client can reach the
      *  extension hosts on `http://<lan-ip>:8765`. */
     private fun startBridgeServer() {
         if (bridgeServer != null) return
+        ensureBridgeToken()
         try {
             val server = BridgeServer(
                 bridgePort,
@@ -757,6 +1092,7 @@ class MainActivity : FlutterFragmentActivity() {
                 { aniyomiHost }, { aniyomiRepoManager },
                 { mangaHost }, { mangaRepoManager },
                 { sharedIdsOrNull() },
+                { bridgeToken() },
             )
             server.start()
             bridgeServer = server
@@ -787,7 +1123,19 @@ class MainActivity : FlutterFragmentActivity() {
         return null
     }
 
-    /** Run a suspend CloudStream call off the main thread, return JSON to Flutter. */
+    private fun canPinWidgets(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            android.appwidget.AppWidgetManager.getInstance(applicationContext)
+                .isRequestPinAppWidgetSupported
+
+    /**
+     * Run a suspend CloudStream call off the main thread, return JSON to Flutter.
+     *
+     * The calls that name a source load the saved source list first
+     * (`ensureLoaded`, once): a widget or notification tap can open a title
+     * before the app has asked for that list, and the source then read as
+     * "unavailable" although it was installed.
+     */
     private fun csAsync(result: MethodChannel.Result, block: suspend () -> String) {
         cloudstreamScope.launch {
             val out = try { block() } catch (t: Throwable) { null }
@@ -795,6 +1143,24 @@ class MainActivity : FlutterFragmentActivity() {
                 if (out != null) result.success(out)
                 else result.error("cs_error", "CloudStream call failed", null)
             }
+        }
+    }
+
+    private fun openNotificationSettings(): Boolean {
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            } else {
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
+            }
+            startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -864,6 +1230,60 @@ class MainActivity : FlutterFragmentActivity() {
             attrs.screenBrightness = -1f
             window.attributes = attrs
         }
+    }
+
+    /**
+     * The volumes downloads may be kept on, as JSON.
+     *
+     * `getExternalFilesDirs` returns the app's own directory on every mounted
+     * volume: index 0 is the built-in "external" storage (which on a modern
+     * phone is the same physical chip as internal), and anything after it is a
+     * real SD card. Both are writable with no permission at all and are wiped
+     * on uninstall, which is the correct lifetime for an offline library.
+     *
+     * `filesDir` is listed first and marked as the default: it is the only one
+     * that can never be unmounted, and it is where every existing install
+     * already keeps its downloads.
+     */
+    private fun describeVolumes(): String {
+        val out = org.json.JSONArray()
+        val seen = HashSet<String>()
+
+        fun add(dir: java.io.File?, id: String, label: String, removable: Boolean, isDefault: Boolean) {
+            if (dir == null) return
+            if (!dir.exists() && !dir.mkdirs()) return
+            if (!seen.add(dir.absolutePath)) return
+            out.put(
+                org.json.JSONObject()
+                    .put("id", id)
+                    .put("path", dir.absolutePath)
+                    .put("label", label)
+                    .put("freeBytes", dir.usableSpace)
+                    .put("totalBytes", dir.totalSpace)
+                    .put("removable", removable)
+                    .put("isDefault", isDefault)
+            )
+        }
+
+        add(filesDir, "app", "internal", removable = false, isDefault = true)
+
+        val external = getExternalFilesDirs(null)
+        for ((index, dir) in external.withIndex()) {
+            if (dir == null) continue
+            val removable = try {
+                android.os.Environment.isExternalStorageRemovable(dir)
+            } catch (_: Exception) {
+                index > 0
+            }
+            add(
+                dir,
+                if (index == 0) "external" else "sdcard_$index",
+                if (removable) "sdcard" else "external",
+                removable = removable,
+                isDefault = false
+            )
+        }
+        return out.toString()
     }
 
     private fun requestNotificationPermission(result: MethodChannel.Result) {
@@ -1000,6 +1420,7 @@ class MainActivity : FlutterFragmentActivity() {
         // Cold start via "Open with Sozo". Parked rather than pushed: the Flutter
         // side isn't listening yet, so it pulls this on first frame.
         pendingRepoFile = RepoFileIntent.extract(applicationContext, intent)
+        pendingWidgetAction = HomeWidgets.actionOf(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1009,6 +1430,12 @@ class MainActivity : FlutterFragmentActivity() {
         RepoFileIntent.extract(applicationContext, intent)?.let { payload ->
             pendingRepoFile = payload
             repoFileChannel?.invokeMethod("openRepoFile", payload)
+        }
+        // A widget tap while the app is alive goes straight to Dart; parked
+        // only when nothing is listening yet.
+        HomeWidgets.actionOf(intent)?.let { action ->
+            val channel = homeWidgetChannel
+            if (channel != null) channel.invokeMethod("action", action) else pendingWidgetAction = action
         }
     }
 
@@ -1037,6 +1464,11 @@ class MainActivity : FlutterFragmentActivity() {
         // being destroyed does not mean playback is over (PiP, rotation).
         // Only the channel is detached.
         TorrentServerBridge.dispose()
+        // Unlike the torrent server, these must go: a decoder and a DRM session
+        // left open outlive the texture they were drawing into, and on devices
+        // with one secure decoder that is the next playback failing to start.
+        drmPlayerHost?.dispose()
+        drmPlayerHost = null
         try { bridgeServer?.stop() } catch (_: Throwable) {}
         bridgeServer = null
         pipReceiver?.let {

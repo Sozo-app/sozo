@@ -1,29 +1,14 @@
-import 'package:soplay/core/network/user_agent.dart';
+import 'package:soplay/core/network/image_headers.dart';
 import 'dart:io';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:shimmer/shimmer.dart';
 import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
-
-class ShimmerWrapper extends StatelessWidget {
-  const ShimmerWrapper({super.key, required this.child});
-  final Widget child;
-
-  // Subtle, but not invisible: eleven levels of separation on a dark panel read
-  // as a frozen screen rather than as loading, which is the one thing a skeleton
-  // exists to avoid.
-  static const _base = Color(0xFF1E1E1E);
-  static const _highlight = Color(0xFF333333);
-
-  @override
-  Widget build(BuildContext context) => Shimmer.fromColors(
-    baseColor: _base,
-    highlightColor: _highlight,
-    period: const Duration(milliseconds: 1650),
-    child: child,
-  );
-}
+import 'package:soplay/core/widgets/shimmer_wrapper.dart';
+// Re-exported so the dozen existing `ShimmerWrapper` call sites in this
+// feature keep working while the definition lives in core.
+export 'package:soplay/core/widgets/shimmer_wrapper.dart';
 
 class HomeNetworkImage extends StatelessWidget {
   const HomeNetworkImage({
@@ -33,6 +18,7 @@ class HomeNetworkImage extends StatelessWidget {
     required this.placeholderIcon,
     this.fit = BoxFit.cover,
     this.headers,
+    this.memCacheWidth,
   });
 
   final String? url;
@@ -42,17 +28,18 @@ class HomeNetworkImage extends StatelessWidget {
 
   final Map<String, String>? headers;
 
-  static Map<String, String>? _defaultHeaders(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
-    return {
-      'Referer': '${uri.scheme}://${uri.host}/',
-      // Must be the app's one agent: a cf_clearance cookie is bound to the exact
-      // agent that earned it, so a poster asking under a different one is
-      // challenged and never loads.
-      'User-Agent': kSozoUserAgent,
-    };
-  }
+  /// Overrides the width this decodes at, instead of measuring it.
+  ///
+  /// Exists so a caller can hand the SAME value to a [PosterHero] wrapped
+  /// around this widget. `memCacheWidth` becomes a `ResizeImage` wrapper and
+  /// therefore part of the image-cache key, so a shuttle that computes its own
+  /// width misses the cache the grid already filled — and flies a blank frame.
+  final int? memCacheWidth;
+
+  /// Moved to core/network/image_headers.dart so the hero shuttle and the
+  /// detail header send byte-identical headers to the same host.
+  static Map<String, String>? _defaultHeaders(String url) =>
+      posterImageHeaders(url);
 
   @override
   Widget build(BuildContext context) {
@@ -86,32 +73,66 @@ class HomeNetworkImage extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final dpr = MediaQuery.devicePixelRatioOf(context);
-          final w = (!isDesktopPlatform && constraints.maxWidth.isFinite)
-              ? (constraints.maxWidth * dpr).round()
-              : null;
-          return Image.network(
-            imageUrl,
-            headers: headers ?? _defaultHeaders(imageUrl),
+          final w =
+              memCacheWidth ??
+              ((!isDesktopPlatform && constraints.maxWidth.isFinite)
+                  ? (constraints.maxWidth * dpr).round()
+                  : null);
+          // CachedNetworkImage, not Image.network.
+          //
+          // `Image.network` caches in memory only. Flutter's image cache is
+          // bounded and cleared with the process, so every cold start — and
+          // every return after the OS trimmed the app — re-downloaded all
+          // forty-odd posters on the home screen. On a slow connection that is
+          // a screen of grey placeholders filling in one by one, which is what
+          // "the app is slow" looks like when the app itself is doing nothing
+          // wrong.
+          //
+          // The disk cache makes the second launch instant. The package was
+          // already a dependency and already used in thirty other places; home,
+          // the most image-heavy screen in the app, was the one that was not.
+          return CachedNetworkImage(
+            imageUrl: imageUrl,
+            httpHeaders: headers ?? _defaultHeaders(imageUrl),
             fit: fit,
             width: double.infinity,
             height: double.infinity,
-            cacheWidth: (w != null && w > 0) ? w : null,
-            filterQuality:
-                isDesktopPlatform ? FilterQuality.medium : FilterQuality.low,
-            errorBuilder: (_, _, _) =>
+            // Decoded at the size it is drawn at, not at the size it was
+            // published at. A 500px poster in a 110px tile costs twenty times
+            // the memory it needs, and the cost is paid per tile.
+            memCacheWidth: (w != null && w > 0) ? w : null,
+            filterQuality: isDesktopPlatform
+                ? FilterQuality.medium
+                : FilterQuality.low,
+            // Loading and broken are different states and now look it. Both
+            // used to be the same grey icon, so a poster that was never going
+            // to arrive was indistinguishable from one still on its way — the
+            // reader had no way to tell "wait" from "this is as good as it
+            // gets". The skeleton says the first, the icon says the second.
+            errorWidget: (_, _, _) =>
                 HomeImagePlaceholder(icon: placeholderIcon),
-            loadingBuilder: (_, child, chunk) => chunk == null
-                ? child
-                : HomeImagePlaceholder(icon: placeholderIcon),
+            placeholder: (_, _) => const HomeImageSkeleton(),
+            // The same dissolve the rest of the app gives an arriving image.
+            // Zero here made home and search the two screens where artwork
+            // snapped in while every other surface eased.
+            fadeInDuration: ShimmerWrapper.imageFade,
+            fadeOutDuration: ShimmerWrapper.imageFade,
           );
         },
       ),
     );
   }
 
+  /// A Windows drive letter, compiled once.
+  ///
+  /// This is checked from [build], once per poster. Compiling the pattern there
+  /// allocated a fresh RegExp for every tile on every rebuild — forty-odd of
+  /// them per home scroll frame — to answer a question whose answer is fixed.
+  static final RegExp _windowsPath = RegExp(r'^[A-Za-z]:[\\/]');
+
   bool _isLocalPath(String value) {
     if (value.startsWith('file://')) return true;
-    return value.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(value);
+    return value.startsWith('/') || _windowsPath.hasMatch(value);
   }
 }
 
@@ -132,6 +153,24 @@ class HomeImagePlaceholder extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A poster that has not arrived yet.
+///
+/// One [ShimmerWrapper] per tile, which the wrapper's own doc argues against —
+/// and rightly, for a skeleton screen, where thirty blocks appear and vanish
+/// together and belong to one sweep. A rail is the other case: every poster
+/// starts and finishes on its own schedule, most of them from the disk cache
+/// within a frame, so there is no shared tree to hang a single wrapper on.
+class HomeImageSkeleton extends StatelessWidget {
+  const HomeImageSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) => const ShimmerWrapper(
+    // Opaque white on purpose: the shimmer composites its gradient with
+    // `srcIn`, so it can only be seen through a fully painted child.
+    child: ColoredBox(color: Colors.white, child: SizedBox.expand()),
+  );
 }
 
 /// Reserves the vertical space of [lines] text lines whether or not [child]
@@ -160,6 +199,24 @@ class FixedTextLines extends StatelessWidget {
     final scaled = MediaQuery.textScalerOf(context).scale(fontSize);
     return SizedBox(height: scaled * lineHeight * lines, child: child);
   }
+}
+
+/// One line of caption in a skeleton, at the weight a line of small text
+/// actually reads as.
+///
+/// A 10px bar against an 11px line looked like a heading; 8 sits where the
+/// x-height of the real text does. Shared, because every grid of cards in the
+/// app has a caption under it and each of them was drawing these bars at its
+/// own height — so two skeletons for two grids of the same card read as two
+/// different kinds of loading.
+class SkeletonLine extends StatelessWidget {
+  const SkeletonLine({super.key, required this.width});
+
+  final double width;
+
+  @override
+  Widget build(BuildContext context) =>
+      HomeSkeletonBox(width: width, height: 8, radius: 2);
 }
 
 class HomeSkeletonBox extends StatelessWidget {

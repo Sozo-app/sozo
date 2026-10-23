@@ -1,5 +1,7 @@
 package com.soplay.sozo.aniyomi
 
+import com.soplay.sozo.ExtensionFailure
+
 import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
@@ -62,8 +64,12 @@ object AniyomiRuntime {
      * Forgets the given sources so the next lookup re-loads them from disk.
      * Used after an extension update — see `MangaRuntime.evictSources`.
      */
-    fun evictSources(sourceIds: List<String>) {
-        synchronized(this) { sourceIds.forEach { sourceCache.remove(it) } }
+    fun evictSources(sourceIds: List<String>, apkPaths: List<String> = emptyList()) {
+        synchronized(this) {
+            sourceIds.forEach { sourceCache.remove(it) }
+            loadedApks.removeAll(apkPaths.toSet())
+            lastError = null
+        }
     }
 
     /**
@@ -125,7 +131,7 @@ object AniyomiRuntime {
                 val clazz = loader.loadClass(className)
                 clazz.getDeclaredConstructor().newInstance()
             } catch (t: Throwable) {
-                lastError = "instantiate $className: ${t.javaClass.simpleName}: ${t.message}"
+                lastError = "instantiate $className: ${ExtensionFailure.describe(t)}"
                 Log.e(TAG, "instantiate $className failed", t); continue
             }
             val sources = when (instance) {

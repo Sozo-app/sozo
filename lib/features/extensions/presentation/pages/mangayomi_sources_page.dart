@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -9,6 +10,7 @@ import 'package:soplay/features/extensions/data/mangayomi_runtime.dart';
 import 'package:soplay/features/extensions/domain/entities/extension_repo_entity.dart';
 import 'package:soplay/features/extensions/domain/entities/mangayomi_source.dart';
 import 'package:soplay/features/extensions/presentation/widgets/recommended_repos_section.dart';
+import 'package:soplay/features/extensions/presentation/widgets/source_settings_sheet.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_bloc.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_event.dart';
 
@@ -47,7 +49,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
     // sorting the branch that passed the original list straight through blew up
     // the whole page for any user with adult sources enabled and no sources yet.
     final all = _store.sources();
-    final visible = _hive.showNsfwMangaSources
+    final visible = _hive.showAdultContent
         ? all.toList()
         : all.where((s) => !s.isNsfw).toList();
     visible.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -76,7 +78,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
     setState(() {
       _busy = true;
       _statusError = false;
-      _status = 'Installing extensions…';
+      _status = 'ext.installing_extensions'.tr();
     });
 
     var added = 0;
@@ -104,12 +106,14 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
       _statusError = added == 0;
       if (added == 0) {
         _status = failures.isEmpty
-            ? 'No JavaScript extensions found at that URL.'
-            : 'Could not install: ${failures.first}';
+            ? 'ext.none_found_js'.tr()
+            : 'ext.could_not_install'.tr(args: [failures.first]);
       } else {
-        _status = 'Added $added source(s).'
-            '${skippedDart > 0 ? ' $skippedDart Dart-only source(s) skipped — '
-                'those are built into Mangayomi and cannot run here.' : ''}';
+        _status = 'ext.added_sources'.tr(args: ['$added']);
+        if (skippedDart > 0) {
+          _status = '$_status '
+              '${'ext.skipped_dart'.tr(args: ['$skippedDart'])}';
+        }
       }
     });
   }
@@ -120,7 +124,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
     _reloadProviders();
     setState(() {
       _statusError = false;
-      _status = 'Repo removed.';
+      _status = 'ext.repo_removed'.tr();
     });
   }
 
@@ -129,7 +133,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
     setState(() {
       _busy = true;
       _statusError = false;
-      _status = 'Checking for extension updates…';
+      _status = 'ext.checking_extension_updates'.tr();
     });
     try {
       final count = await _store.checkUpdates();
@@ -141,14 +145,14 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
       setState(() {
         _statusError = false;
         _status = count == 0
-            ? 'All extensions are up to date.'
-            : 'Updated $count extension(s).';
+            ? 'ext.all_up_to_date'.tr()
+            : 'ext.updated_count'.tr(args: ['$count']);
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _statusError = true;
-        _status = 'Update check failed: $e';
+        _status = 'ext.update_check_failed'.tr(args: ['$e']);
       });
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -159,10 +163,9 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
   Widget build(BuildContext context) {
     if (!MangayomiRuntime.isSupported) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Mangayomi Sources')),
-        body: const Center(
-          child: Text('JavaScript extensions need a WebView, '
-              'which is unavailable on this platform.'),
+        appBar: AppBar(title: Text('ext.mangayomi_title'.tr())),
+        body: Center(
+          child: Text('ext.needs_webview'.tr()),
         ),
       );
     }
@@ -175,10 +178,10 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         elevation: 0,
-        title: const Text('Mangayomi Sources'),
+        title: Text('ext.mangayomi_title'.tr()),
         actions: [
           IconButton(
-            tooltip: 'Check for extension updates',
+            tooltip: 'ext.check_extension_updates'.tr(),
             icon: const Icon(Icons.system_update_alt_rounded),
             onPressed: (_busy || repos.isEmpty) ? null : _checkUpdates,
           ),
@@ -201,13 +204,13 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
             busy: _busy,
             accent: _accent,
             fallbackIcon: _logo,
-            nsfwAllowed: _hive.showNsfwMangaSources,
+            nsfwAllowed: _hive.showAdultContent,
             onInstall: (repo) => _install(repo.allUrls),
           ),
           const SizedBox(height: 24),
           Row(
             children: [
-              Text('INSTALLED REPOS',
+              Text('ext.installed_repos'.tr(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: AppColors.textHint, letterSpacing: 1)),
               const Spacer(),
@@ -224,7 +227,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
               children: [
                 const Icon(Icons.javascript_outlined, size: 16, color: _accent),
                 const SizedBox(width: 6),
-                Text('SOURCES',
+                Text('ext.sources_heading'.tr(),
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: AppColors.textHint, letterSpacing: 1)),
                 const Spacer(),
@@ -247,6 +250,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
             child: Image.network(_logo,
                 width: 44,
                 height: 44,
+                cacheWidth: 132,
                 fit: BoxFit.cover,
                 errorBuilder: (_, _, _) => Container(
                       width: 44,
@@ -257,12 +261,10 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
                     )),
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Text(
-              'Mangayomi extensions are JavaScript, not Android apps — so unlike '
-              'CloudStream, Aniyomi and Manga sources, these also work on iOS, '
-              'macOS and Windows.',
-              style: TextStyle(
+              'ext.mangayomi_desc'.tr(),
+              style: const TextStyle(
                   color: AppColors.textHint, fontSize: 12.5, height: 1.35),
             ),
           ),
@@ -285,7 +287,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
               style: const TextStyle(color: Colors.white),
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
-                labelText: 'Index URL',
+                labelText: 'ext.index_url'.tr(),
                 labelStyle: const TextStyle(color: AppColors.textHint),
                 floatingLabelStyle: const TextStyle(color: _accent),
                 hintText: 'https://…/index.json',
@@ -320,7 +322,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.add),
-                label: Text(_busy ? 'Installing…' : 'Add repo'),
+                label: Text(_busy ? 'ext.installing'.tr() : 'ext.add_repo'.tr()),
               ),
             ),
           ],
@@ -363,11 +365,13 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: const Column(
+        child: Column(
           children: [
-            Icon(Icons.cloud_off_outlined, color: AppColors.textHint, size: 32),
-            SizedBox(height: 8),
-            Text('No repos yet', style: TextStyle(color: AppColors.textHint)),
+            const Icon(Icons.cloud_off_outlined,
+                color: AppColors.textHint, size: 32),
+            const SizedBox(height: 8),
+            Text('ext.no_repos_yet'.tr(),
+                style: const TextStyle(color: AppColors.textHint)),
           ],
         ),
       );
@@ -418,6 +422,7 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
                   s.iconUrl.isEmpty ? _logo : s.iconUrl,
                   width: 26,
                   height: 26,
+                  cacheWidth: 78,
                   fit: BoxFit.cover,
                   errorBuilder: (_, _, _) => Container(
                     width: 26,
@@ -468,14 +473,23 @@ class _MangayomiSourcesPageState extends State<MangayomiSourcesPage> {
                   ],
                 ),
               ),
+              // The source's own settings — its domain, preferred quality,
+              // what it hides.
+              IconButton(
+                tooltip: 'ext.settings'.tr(),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.tune_rounded,
+                    size: 19, color: Colors.white70),
+                onPressed: () => SourceSettingsSheet.show(context, s),
+              ),
             ],
           ),
         ),
       );
 
   static String _typeLabel(MangayomiItemType t) => switch (t) {
-        MangayomiItemType.anime => 'Anime',
-        MangayomiItemType.novel => 'Novel',
-        MangayomiItemType.manga => 'Manga',
+        MangayomiItemType.anime => 'ext.type_anime'.tr(),
+        MangayomiItemType.novel => 'ext.type_novel'.tr(),
+        MangayomiItemType.manga => 'ext.type_manga'.tr(),
       };
 }

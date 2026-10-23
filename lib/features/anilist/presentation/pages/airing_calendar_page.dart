@@ -285,7 +285,9 @@ class _AiringCalendarPageState extends State<AiringCalendarPage>
             ),
           Expanded(
             child: ListView.separated(
-              key: PageStorageKey<String>('anilist-day-${day.toIso8601String()}'),
+              key: PageStorageKey<String>(
+                'anilist-day-${day.toIso8601String()}',
+              ),
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(14, 8, 14, 28),
               itemCount: rows.length,
@@ -296,7 +298,8 @@ class _AiringCalendarPageState extends State<AiringCalendarPage>
                 // 18:00 down six rows is noise; the line is what carries them.
                 final previous = i == 0 ? null : rows[i - 1].airing.airsAt;
                 final at = row.airing.airsAt;
-                final startsTime = previous == null ||
+                final startsTime =
+                    previous == null ||
                     previous.hour != at.hour ||
                     previous.minute != at.minute;
 
@@ -348,8 +351,9 @@ class _AiringCalendarPageState extends State<AiringCalendarPage>
           : 'anilist.calendar_empty'.tr();
     }
     final failed = error != null || listFailed;
-    final VoidCallback retry =
-        listFailed ? () => _library.load(force: true) : refresh;
+    final VoidCallback retry = listFailed
+        ? () => _library.load(force: true)
+        : refresh;
 
     return RefreshIndicator(
       color: kAnilistBlue,
@@ -398,7 +402,10 @@ class _AiringCalendarPageState extends State<AiringCalendarPage>
     final messenger = ScaffoldMessenger.of(context);
     String message;
     try {
-      final saved = await _service.api.addToList(token: token, mediaId: media.id);
+      final saved = await _service.api.addToList(
+        token: token,
+        mediaId: media.id,
+      );
       // Re-read rather than patch a synthetic entry in: the mark on this card
       // is driven by the library, and AniList decides the entry's id.
       await _library.load(force: true);
@@ -558,7 +565,7 @@ class _DayHeader extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
       child: Align(
-        alignment: Alignment.centerLeft,
+        alignment: AlignmentDirectional.centerStart,
         child: Text(
           label,
           style: const TextStyle(
@@ -688,7 +695,7 @@ class _StaleBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-      padding: const EdgeInsets.fromLTRB(11, 8, 6, 8),
+      padding: const EdgeInsetsDirectional.fromSTEB(11, 8, 6, 8),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(11),
@@ -916,7 +923,10 @@ class _AiringCard extends StatelessWidget {
     final aired = airing.hasAired;
     final episode = row.isRange
         ? 'anilist.calendar_episode_range'.tr(
-            namedArgs: {'from': '${row.firstEpisode}', 'to': '${row.lastEpisode}'},
+            namedArgs: {
+              'from': '${row.firstEpisode}',
+              'to': '${row.lastEpisode}',
+            },
           )
         : 'anilist.calendar_episode'.tr(
             namedArgs: {'episode': '${airing.episode}'},
@@ -944,7 +954,11 @@ class _AiringCard extends StatelessWidget {
               // what is still to come from what already aired.
               Opacity(
                 opacity: aired ? 0.55 : 1,
-                child: AnilistCover(url: media.coverImage, width: 44, radius: 8),
+                child: AnilistCover(
+                  url: media.coverImage,
+                  width: 44,
+                  radius: 8,
+                ),
               ),
               const SizedBox(width: 11),
               Expanded(

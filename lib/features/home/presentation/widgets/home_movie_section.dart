@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/system/responsive.dart';
+import 'package:soplay/core/widgets/item_appear.dart';
 import 'package:soplay/core/theme/app_colors.dart';
+import 'package:soplay/core/widgets/poster_hero.dart';
 import 'package:soplay/features/detail/domain/entities/detail_args.dart';
 import 'package:soplay/features/home/domain/entities/movie.dart';
 import 'package:soplay/features/home/domain/entities/view_all.dart';
@@ -26,17 +29,83 @@ class MovieSection extends StatelessWidget {
   final bool isHighlighted;
   final VoidCallback? onSeeAll;
 
+  /// Whether this rail has anywhere to page into.
+  ///
+  /// A catalogue's rails do not: AniList's "Releasing now" is the whole of
+  /// what AniList was asked for, and the backend says so by sending a null
+  /// `viewAll`. That arrived here as an empty type and slug, the header stayed
+  /// a button anyway, and tapping it pushed `/view-all` with nothing in it —
+  /// which the API answered with a 404 and the user read as the app being
+  /// broken. A row that leads nowhere should not look like a row that does.
+  bool get _hasMore => onSeeAll != null || type.isNotEmpty || slug.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
+    final header = Padding(
+      padding: const EdgeInsetsDirectional.fromSTEB(17, 18, 20, 14),
+      child: Row(
+        children: [
+          // The accent tick is on EVERY row now, not only the highlighted
+          // one — it is the mark that carries the chosen colour down the
+          // whole of Home. Highlighted rows keep their distinction by being
+          // taller and gradient-filled.
+          Container(
+            width: 3,
+            height: isHighlighted ? 19 : 15,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: isHighlighted
+                    ? [AppColors.primaryLight, AppColors.primary]
+                    : [
+                        AppColors.primary,
+                        AppColors.primary.withValues(alpha: 0.55),
+                      ],
+              ),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+                height: 1.1,
+              ),
+            ),
+          ),
+          if (_hasMore)
+            Icon(
+              Icons.chevron_right_rounded,
+              color: isHighlighted ? AppColors.primary : AppColors.textHint,
+              size: 22,
+            ),
+        ],
+      ),
+    );
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (!_hasMore)
+            header
+          else
           // The padding is INSIDE the InkWell: outside it, the tappable strip
           // was only as tall as the title text (~19dp).
           HomeSectionTapTarget(
             onTap: () {
+              // The strip is a button that leaves the screen, and until now the
+              // only thing that said so was the dip. On a phone a tap that
+              // navigates is expected to be felt.
+              HapticFeedback.selectionClick();
               if (onSeeAll != null) {
                 onSeeAll!();
                 return;
@@ -46,55 +115,7 @@ class MovieSection extends StatelessWidget {
                 extra: ViewAllEntity(type: type, slug: slug, name: title),
               );
             },
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(17, 18, 20, 14),
-              child: Row(
-                children: [
-                  // The accent tick is on EVERY row now, not only the
-                  // highlighted one — it is the mark that carries the chosen
-                  // colour down the whole of Home. Highlighted rows keep their
-                  // distinction by being taller and gradient-filled.
-                  Container(
-                    width: 3,
-                    height: isHighlighted ? 19 : 15,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: isHighlighted
-                            ? [AppColors.primaryLight, AppColors.primary]
-                            : [
-                                AppColors.primary,
-                                AppColors.primary.withValues(alpha: 0.55),
-                              ],
-                      ),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                        height: 1.1,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    Icons.chevron_right_rounded,
-                    color: isHighlighted
-                        ? AppColors.primary
-                        : AppColors.textHint,
-                    size: 22,
-                  ),
-                ],
-              ),
-            ),
+            child: header,
           ),
           SizedBox(
             height: isDesktopPlatform ? 300 : 195,
@@ -108,7 +129,18 @@ class MovieSection extends StatelessWidget {
                 vertical: isDesktopPlatform ? 4 : 0,
               ),
               itemCount: movies.length > 16 ? 16 : movies.length,
-              itemBuilder: (_, index) => _MovieCard(movie: movies[index]),
+              itemBuilder: (_, index) => ItemAppear(
+                index: index,
+                // A rail scrolls sideways, so its cards come in from the edge
+                // they are travelling from, one after the other.
+                axis: Axis.horizontal,
+                child: _MovieCard(
+                  movie: movies[index],
+                  // Section slug + position: unique on screen even when two
+                  // rows carry the same title, and stable across a rebuild.
+                  heroTag: 'poster:$slug:$index',
+                ),
+              ),
             ),
           ),
         ],
@@ -118,9 +150,13 @@ class MovieSection extends StatelessWidget {
 }
 
 class _MovieCard extends StatefulWidget {
-  const _MovieCard({required this.movie});
+  const _MovieCard({required this.movie, this.heroTag});
 
   final MovieEntity movie;
+
+  /// Threaded, but currently inert: `PosterHero.flightEnabled` is false, so
+  /// nothing flies. Kept so the flight is one word away from coming back.
+  final String? heroTag;
 
   @override
   State<_MovieCard> createState() => _MovieCardState();
@@ -132,9 +168,20 @@ class _MovieCardState extends State<_MovieCard> {
   void _openDetail() {
     final movie = widget.movie;
     if (movie.url.isNotEmpty) {
+      // Only on a card that actually opens something. Firing before the empty
+      // -url check would make a dead card feel exactly like a live one.
+      HapticFeedback.selectionClick();
       context.push(
         '/detail',
-        extra: DetailArgs(contentUrl: movie.url, preview: movie),
+        extra: DetailArgs(
+          contentUrl: movie.url,
+          preview: movie,
+          // The card's own source. Without it the detail page falls back to
+          // whatever Hive calls current, which is a different source the moment
+          // the two have drifted — and then it looks this title up in a
+          // catalogue that has never heard of it.
+          provider: movie.provider.isNotEmpty ? movie.provider : null,
+        ),
       );
     }
   }
@@ -148,6 +195,13 @@ class _MovieCardState extends State<_MovieCard> {
     // Sozo-Desktop item sizing/styling on desktop; untouched on mobile.
     final width = desktop ? 152.0 : 118.0;
     final radius = desktop ? 12.0 : 10.0;
+
+    // Computed once here rather than inside the image, so the tile and the
+    // hero shuttle resolve byte-identical cache keys. Desktop keeps full
+    // resolution — HomeNetworkImage skips its own sizing there too.
+    final decodeWidth = desktop
+        ? null
+        : (width * MediaQuery.devicePixelRatioOf(context)).round();
 
     final cover = Expanded(
       child: AnimatedContainer(
@@ -169,10 +223,25 @@ class _MovieCardState extends State<_MovieCard> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              HomeNetworkImage(
+              // Only the IMAGE flies, not the card. Carrying the badges and
+              // the gradient along would mean interpolating a 9pt quality
+              // chip up to header size, which reads as a glitch rather than
+              // a transition.
+              PosterHero(
+                tag: widget.heroTag,
                 url: movie.thumbnail,
-                borderRadius: BorderRadius.zero,
-                placeholderIcon: Icons.movie_outlined,
+                fromRadius: radius,
+                // The SAME number goes to both, and that is the whole point:
+                // memCacheWidth becomes part of the image-cache key, so a
+                // shuttle that measured its own width would miss the cache
+                // this tile just filled and fly a blank frame.
+                memCacheWidth: decodeWidth,
+                child: HomeNetworkImage(
+                  url: movie.thumbnail,
+                  borderRadius: BorderRadius.zero,
+                  placeholderIcon: Icons.movie_outlined,
+                  memCacheWidth: decodeWidth,
+                ),
               ),
               const Positioned(
                 left: 0,
@@ -192,9 +261,13 @@ class _MovieCardState extends State<_MovieCard> {
                 ),
               ),
               if (quality != null)
-                Positioned(
+                // Directional, not physical: in Arabic — the largest
+                // translation the app ships — the poster's reading order
+                // flips and a badge pinned to `right` lands over the start of
+                // the artwork instead of the far corner.
+                PositionedDirectional(
                   top: 6,
-                  right: 6,
+                  end: 6,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 5,
@@ -323,7 +396,7 @@ class CollectionLoadingRow extends StatelessWidget {
             padding: EdgeInsets.zero,
             itemCount: 6,
             itemBuilder: (_, i) => Padding(
-              padding: EdgeInsets.only(right: desktop ? 12 : 8),
+              padding: EdgeInsetsDirectional.only(end: desktop ? 12 : 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [

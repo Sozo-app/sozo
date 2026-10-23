@@ -18,7 +18,7 @@ class CrossSearchController extends ChangeNotifier {
   CrossSearchController({required this.engine, required List<ProviderRef> set})
       : _set = set;
 
-  final CrossSearchEngine engine;
+  final SearchFanOut engine;
   List<ProviderRef> _set;
 
   final QueryDebouncer _debouncer = QueryDebouncer();
@@ -33,6 +33,20 @@ class CrossSearchController extends ChangeNotifier {
   final Map<String, ProviderSearchResult> _results = {};
   final Set<String> _retrying = {};
   List<MergedSearchTitle> _merged = const [];
+
+  /// Coalesces arriving legs into one merge per tick.
+  ///
+  /// `mergeSearchResults` rebuilds from scratch: it regroups every item of
+  /// every leg collected so far and re-scores each one against the query. Doing
+  /// that per arrival is quadratic in the number of sources — at 2000 installed
+  /// sources it is tens of millions of item comparisons over a run, all of it
+  /// on the UI isolate, which is why the screen stopped responding long before
+  /// the search itself was finished.
+  ///
+  /// Batching does not delay a result by more than this window, and a user
+  /// cannot read a list that reflows sixty times a second anyway.
+  static const Duration _flushWindow = Duration(milliseconds: 250);
+  Timer? _flush;
 
   static const int _cacheEntries = 6;
   static const Duration _cacheTtl = Duration(minutes: 5);
@@ -176,7 +190,11 @@ class CrossSearchController extends ChangeNotifier {
     _retrying.add(providerId);
     notifyListeners();
 
-    final result = await engine.searchProvider(ref, _query);
+    // The user pressed this, on one named source, and is watching it. It gets
+    // the source's honest budget rather than the four-second penalty leash —
+    // which Retry always inherited, because Retry only ever appears beside a
+    // source that has just been marked broken.
+    final result = await engine.searchProvider(ref, _query, deliberate: true);
     _retrying.remove(providerId);
     if (token != _token) return;
 
@@ -185,11 +203,48 @@ class CrossSearchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Every leg that failed or timed out, at once.
+  /// Every leg that failed or timed out, a few at a time.
+  ///
+  /// Bounded, because `Future.wait` over every failed id was not. When most of
+  /// a run fails — which is the ordinary case on a device whose extension
+  /// sources are cold — "Retry all" launched up to [CrossSearchEngine.maxLegs]
+  /// simultaneous searches, each of which can boot a WebView or dex-load an
+  /// APK. That is precisely the overload the engine's own concurrency pool
+  /// exists to prevent, reached by going around it.
   Future<void> retryFailed() async {
+    // One run at a time. The pool below bounds ONE call; it does nothing about
+    // a second tap, and the button sits next to a list of failures where the
+    // natural reaction to "nothing happened yet" is to press it again. Each
+    // extra tap added another five-wide pool of its own, so three impatient
+    // taps put fifteen extension searches on a device that was already slow
+    // enough to invite them.
+    if (_retryingAll) return;
+    _retryingAll = true;
+    notifyListeners();
+    try {
+      await _retryFailed();
+    } finally {
+      _retryingAll = false;
+      notifyListeners();
+    }
+  }
+
+  /// Whether a "Retry all" is in flight, so the button can say so.
+  bool get retryingAll => _retryingAll;
+  bool _retryingAll = false;
+
+  Future<void> _retryFailed() async {
     final ids = [for (final leg in failedLegs) leg.provider.id];
     if (ids.isEmpty) return;
-    await Future.wait(ids.map(retryProvider));
+    final queue = List<String>.of(ids);
+    await Future.wait([
+      for (var i = 0; i < CrossSearchEngine.defaultConcurrency; i++)
+        () async {
+          while (queue.isNotEmpty) {
+            await retryProvider(queue.removeAt(0));
+          }
+        }(),
+    ]);
   }
 
   /// Whether a [loadMore] is in flight, so the button can say so and refuse a
@@ -261,19 +316,31 @@ class CrossSearchController extends ChangeNotifier {
       (result) {
         if (token != _token) return;
         _results[result.provider.id] = result;
-        _remerge();
-        notifyListeners();
+        _scheduleFlush();
       },
       onDone: () {
         if (token != _token) return;
         _phase = CrossSearchPhase.done;
         _store(q);
-        notifyListeners();
+        // The last legs may still be sitting in the current window; the run is
+        // not allowed to report itself finished on a stale list.
+        _flushNow();
       },
     );
   }
 
-  void _remerge() => _merged = mergeSearchResults(results);
+  void _remerge() => _merged = mergeSearchResults(results, query: _query);
+
+  void _scheduleFlush() {
+    _flush ??= Timer(_flushWindow, _flushNow);
+  }
+
+  void _flushNow() {
+    _flush?.cancel();
+    _flush = null;
+    _remerge();
+    notifyListeners();
+  }
 
   void _store(String q) {
     // Never replay a run that contains a failure: retyping the query is how a
@@ -312,6 +379,8 @@ class CrossSearchController extends ChangeNotifier {
 
   void _cancel() {
     _debouncer.cancel();
+    _flush?.cancel();
+    _flush = null;
     _sub?.cancel();
     _sub = null;
   }

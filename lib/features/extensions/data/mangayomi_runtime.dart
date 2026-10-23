@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show PlatformException, rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -10,6 +11,7 @@ import 'package:soplay/core/js/js_log.dart';
 import 'package:soplay/core/js/js_timeouts.dart';
 import 'package:soplay/core/system/webview_env.dart';
 import 'package:soplay/features/extensions/data/mangayomi_repo_store.dart';
+import 'package:soplay/features/extensions/data/mangayomi_epub.dart';
 import 'package:soplay/features/extensions/domain/entities/mangayomi_source.dart';
 
 /// Runs Mangayomi JavaScript extensions in a headless WebView.
@@ -29,6 +31,11 @@ class MangayomiRuntime {
 
   final MangayomiRepoStore store;
   final DartFetch dartFetch;
+  late final MangayomiEpub _epub = MangayomiEpub(
+    (url, headers) => dartFetch.fetchBytes(url, headers),
+  );
+  int _generation = 0;
+  String? _seededPrefs;
 
   HeadlessInAppWebView? _webView;
   InAppWebViewController? _controller;
@@ -48,12 +55,22 @@ class MangayomiRuntime {
 
   /// `flutter_inappwebview` has no Linux implementation, so JS extensions can't
   /// run there. Everywhere else — including iOS — they can.
-  static bool get isSupported => !Platform.isLinux;
+  ///
+  /// Tests set [debugSupportedSet] because this reads the host they happen to
+  /// run on. The suites that exercise the extension paths use fakes and never
+  /// touch the runtime itself, but they were silently skipped on the Linux CI
+  /// runner and exercised on a Mac — so they passed for one of us and failed
+  /// for the other, over a platform neither was testing.
+  static bool get isSupported => debugSupportedSet ?? !Platform.isLinux;
+
+  @visibleForTesting
+  static bool? debugSupportedSet;
 
   Future<void> ensureReady() {
     if (!isSupported) return Future<void>.value();
+    final generation = _generation;
     return _ready ??= _boot().catchError((Object e) {
-      _ready = null;
+      if (generation == _generation) _ready = null;
       JsLog.err('mangayomi', 'boot failed: $e');
       throw e;
     });
@@ -83,6 +100,7 @@ class MangayomiRuntime {
   }
 
   Future<void> _bootOnce() async {
+    final generation = _generation;
     final completer = Completer<InAppWebViewController>();
     final environment = await WebViewEnv.ensure();
 
@@ -93,6 +111,8 @@ class MangayomiRuntime {
         javaScriptEnabled: true,
         javaScriptCanOpenWindowsAutomatically: false,
         mediaPlaybackRequiresUserGesture: true,
+        // No system picture-in-picture for a page nobody is looking at.
+        allowsPictureInPictureMediaPlayback: false,
         clearCache: false,
         cacheEnabled: false,
         transparentBackground: true,
@@ -108,6 +128,44 @@ class MangayomiRuntime {
             return await dartFetch.call(args.first);
           },
         );
+        // LNReader's fetchFile: bytes, as base64, through the same client.
+        controller.addJavaScriptHandler(
+          handlerName: 'dartFetchBytes',
+          callback: (args) async {
+            try {
+              final req = args.isEmpty ? null : args.first;
+              if (req is! Map || req['url'] is! String) return {'base64': ''};
+              final headers = <String, String>{
+                for (final e in ((req['headers'] as Map?) ?? const {}).entries)
+                  e.key.toString(): e.value.toString(),
+              };
+              final bytes = await dartFetch.fetchBytes(
+                req['url'] as String,
+                headers,
+              );
+              return {'base64': base64Encode(bytes)};
+            } catch (error) {
+              return {'base64': '', 'error': error.toString()};
+            }
+          },
+        );
+        controller.addJavaScriptHandler(
+          handlerName: 'mangayomiEpub',
+          callback: (args) async {
+            try {
+              if (args.isEmpty || args.first is! Map) {
+                throw StateError('Invalid EPUB request');
+              }
+              return {
+                'value': await _epub.call(
+                  Map<String, dynamic>.from(args.first as Map),
+                ),
+              };
+            } catch (error) {
+              return {'error': error.toString()};
+            }
+          },
+        );
         if (!completer.isCompleted) completer.complete(controller);
       },
       onConsoleMessage: (_, msg) =>
@@ -115,6 +173,10 @@ class MangayomiRuntime {
     );
 
     await webView.run();
+    if (generation != _generation) {
+      await webView.dispose();
+      throw StateError('Mangayomi context was cancelled');
+    }
     _webView = webView;
     final controller = await completer.future;
     _controller = controller;
@@ -131,6 +193,14 @@ class MangayomiRuntime {
 
     final bridge = await rootBundle.loadString('assets/js/mangayomi_bridge.js');
     await controller.evaluateJavascript(source: bridge);
+    // The real cheerio, htmlparser2 and dayjs LNReader plugins require, then
+    // the adapter that hands them over. The adapter sends plugin requests
+    // through `dartFetch` — the WebView's own fetch is cross-origin from
+    // this page, and almost no novel site allows that.
+    final deps = await rootBundle.loadString('assets/js/lnreader_deps.js');
+    await controller.evaluateJavascript(source: deps);
+    final lnreader = await rootBundle.loadString('assets/js/lnreader.js');
+    await controller.evaluateJavascript(source: lnreader);
   }
 
   Future<void> _waitForHost(InAppWebViewController controller) async {
@@ -151,7 +221,7 @@ class MangayomiRuntime {
   }
 
   Future<void> _ensureExtension(MangayomiSource source) async {
-    if (_activeId == source.id && _activeVersion == source.version) {
+    if (_activeId == source.id && _activeVersion == source.runtimeIdentity) {
       // Still refresh preferences: the user may have changed one since the
       // extension was loaded, and `SharedPreferences` reads a plain global.
       await _seedPrefs(source);
@@ -161,7 +231,7 @@ class MangayomiRuntime {
     // Already compiled this session — swapping back is a pointer assignment.
     // Reloading meant re-running new Function(code) on every source switch,
     // which a cross-search does once per source per query.
-    if (_loaded[source.id] == source.version) {
+    if (_loaded[source.id] == source.runtimeIdentity) {
       await _seedPrefs(source);
       final activated = await _controller!.callAsyncJavaScript(
         functionBody: r'return __sozoActivateMangayomi(id);',
@@ -169,7 +239,7 @@ class MangayomiRuntime {
       );
       if (activated?.value == true) {
         _activeId = source.id;
-        _activeVersion = source.version;
+        _activeVersion = source.runtimeIdentity;
         return;
       }
       // The page was reloaded underneath us; fall through and compile again.
@@ -179,16 +249,41 @@ class MangayomiRuntime {
     final code = await store.code(source);
     await _seedPrefs(source);
     final result = await _controller!.callAsyncJavaScript(
-      functionBody: r'return __sozoLoadMangayomi(code, source);',
+      // Two ecosystems, one registry. An LNReader plugin is a CommonJS bundle
+      // exporting a class with `parseChapter`; the shim turns it into the same
+      // object shape a Mangayomi extension produces, which is why nothing
+      // downstream of this line — search, home, detail, chapters, the reader,
+      // downloads, EPUB export — needed changing for it.
+      functionBody: source.isLnReader
+          ? r'''
+        const p = __sozoLoadLnReader(code, source);
+        const registry = globalThis.__sozoProviders || (globalThis.__sozoProviders = {});
+        registry[String(source.id)] = p;
+        globalThis.__sozoProvider = p;
+        globalThis.__sozoSource = source;
+        return true;
+      '''
+          : r'return __sozoLoadMangayomi(code, source);',
       arguments: {'code': code, 'source': source.toJs()},
     );
     final error = result?.error;
     if (error != null && error.isNotEmpty) {
+      await store.clearCode(source.id);
       throw Exception('${source.name}: $error');
     }
+    if (result?.value != true) {
+      throw StateError('${source.name}: extension did not initialize');
+    }
     _activeId = source.id;
-    _activeVersion = source.version;
-    _loaded[source.id] = source.version;
+    _activeVersion = source.runtimeIdentity;
+    _loaded[source.id] = source.runtimeIdentity;
+    if (_loaded.length > 16) {
+      final oldest = _loaded.keys.first;
+      _loaded.remove(oldest);
+      await _controller!.evaluateJavascript(
+        source: 'delete globalThis.__sozoProviders[${jsonEncode(oldest)}];',
+      );
+    }
   }
 
   /// Keys extensions conventionally read their host from.
@@ -200,6 +295,10 @@ class MangayomiRuntime {
     'domain_url',
     'overrideBaseUrl',
     'baseUrl',
+    // kolnovel's own spelling. Harmless where it is unused, and the whole point
+    // of this list is that it is the set actually observed in the wild rather
+    // than one canonical name nobody agreed on.
+    'base_url',
     'preferred_domain',
   ];
 
@@ -217,16 +316,22 @@ class MangayomiRuntime {
     }
     // The user's own choices still win.
     values.addAll(store.prefs(source.id));
+    final encoded = jsonEncode(values);
+    final key = '${source.id}:$encoded';
+    if (_seededPrefs == key) return;
     await _controller!.evaluateJavascript(
-      source: 'globalThis.__sozoPrefs = ${jsonEncode(values)};'
+      source:
+          'globalThis.__sozoPrefs = $encoded;'
           'globalThis.__sozoPrefsDirty = false;',
     );
+    _seededPrefs = key;
   }
 
   Future<void> _flushPrefs(MangayomiSource source) async {
     try {
-      final dirty = await _controller!
-          .evaluateJavascript(source: 'globalThis.__sozoPrefsDirty === true');
+      final dirty = await _controller!.evaluateJavascript(
+        source: 'globalThis.__sozoPrefsDirty === true',
+      );
       if (dirty != true) return;
       final raw = await _controller!.evaluateJavascript(
         source: 'JSON.stringify(globalThis.__sozoPrefs || {})',
@@ -259,32 +364,55 @@ class MangayomiRuntime {
     final tag = 'mangayomi:${source.name}';
     final sw = Stopwatch()..start();
     JsLog.req(tag, method);
-    await ensureReady();
-
     // Bounded, and bounded INSIDE the lock. Every call queues behind _gate, so a
     // single extension that never answers — a Cloudflare solve that never
     // resolves, most often — used to hold every later call behind it forever,
     // which is a screen left shimmering with nothing to time out.
-    final result = await _locked(() async {
-      await _ensureExtension(source).timeout(kJsCallTimeout);
-      final r = await _controller!.callAsyncJavaScript(
-        functionBody: r'''
+    //
+    // The Cloudflare solve happens between attempts, outside the lock and
+    // after the JavaScript handler has answered. Without it a challenged
+    // LNReader site only failed with the plugin's own "open in webview".
+    final start = dartFetch.mark();
+    final result = await dartFetch.retryAfterCloudflare(
+      () => _locked(() async {
+        try {
+          await ensureReady().timeout(kJsCallTimeout);
+          await _ensureExtension(source).timeout(kJsCallTimeout);
+          final r = await _controller!
+              .callAsyncJavaScript(
+                functionBody: r'''
           const p = globalThis.__sozoProvider;
-          const fn = p ? p[fnName] : null;
+          const fn = fnName === '__sozoImageHeaders' ? globalThis.__sozoImageHeaders : (p ? p[fnName] : null);
           if (typeof fn !== 'function') {
             throw new Error('Extension does not implement ' + fnName);
           }
           const out = await fn.apply(p, fnArgs);
+          // EPUB spine order is already reading order. Only mark lists that
+          // the extension returned unchanged from the host's chapter titles.
+          if (fnName === 'getDetail' && out && Array.isArray(out.chapters) &&
+              Array.isArray(p.__sozoEpubTitles) &&
+              out.chapters.length === p.__sozoEpubTitles.length &&
+              out.chapters.every((c, i) => c.name === p.__sozoEpubTitles[i])) {
+            out.chapterOrder = 'ascending';
+          }
           // Stringify here rather than relying on the bridge's own conversion:
           // the WebView<->Dart channel flattens class instances, and every
           // extension returns plain data anyway.
           return out === undefined ? null : JSON.stringify(out);
         ''',
-        arguments: {'fnName': method, 'fnArgs': args},
-      ).timeout(kJsCallTimeout);
-      await _flushPrefs(source);
-      return r;
-    });
+                arguments: {'fnName': method, 'fnArgs': args},
+              )
+              .timeout(kJsCallTimeout);
+          await _flushPrefs(source);
+          return r;
+        } on TimeoutException {
+          // Future.timeout does not cancel JavaScript. Destroy the shared context
+          // before another provider can run with a timed-out provider's globals.
+          await dispose();
+          rethrow;
+        }
+      }),
+    );
 
     if (result == null) {
       JsLog.err(tag, '$method returned null');
@@ -293,7 +421,9 @@ class MangayomiRuntime {
     final error = result.error;
     if (error != null && error.isNotEmpty) {
       JsLog.err(tag, '$method threw: $error');
-      throw Exception(error);
+      throw Exception(
+        withCloudflareCause(error, dartFetch.cloudflareBlockSince(start)),
+      );
     }
     JsLog.res(tag, method, ms: sw.elapsedMilliseconds, status: 200);
     final value = result.value;
@@ -307,6 +437,17 @@ class MangayomiRuntime {
       }
     }
     return value;
+  }
+
+  /// [error] naming the Cloudflare challenge behind it, so the error screen
+  /// offers the solver. Plugins throw their own words for a challenged page
+  /// ("Could not reach site (403)"), which never mention it.
+  @visibleForTesting
+  static String withCloudflareCause(String error, String? block) {
+    if (block == null || error.toLowerCase().contains('cloudflare')) {
+      return error;
+    }
+    return '$error ($block)';
   }
 
   /// Drops the loaded extension so the next call re-reads its code. Used after
@@ -327,6 +468,8 @@ class MangayomiRuntime {
   }
 
   Future<void> dispose() async {
+    _generation++;
+    _seededPrefs = null;
     try {
       await _webView?.dispose();
     } catch (e) {

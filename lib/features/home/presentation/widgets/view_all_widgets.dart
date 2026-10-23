@@ -4,12 +4,15 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/system/responsive.dart';
+import 'package:soplay/core/widgets/item_appear.dart';
 import 'package:soplay/core/theme/app_colors.dart';
+import 'package:soplay/features/sources/domain/source_failure.dart';
 import 'package:soplay/features/detail/domain/entities/detail_args.dart';
 import 'package:soplay/features/home/domain/entities/movie.dart';
 import 'package:soplay/features/home/presentation/bloc/view_all/view_all_state.dart';
 import 'package:soplay/features/home/presentation/widgets/home_shared_widgets.dart';
 import 'package:soplay/features/home/presentation/widgets/home_ui_helpers.dart';
+import 'package:soplay/core/widgets/poster_hero.dart';
 
 class ViewAllAppBar extends StatelessWidget {
   const ViewAllAppBar({
@@ -39,7 +42,7 @@ class ViewAllAppBar extends StatelessWidget {
               )
             : null,
       ),
-      padding: EdgeInsets.fromLTRB(4, topPad + 4, 16, 0),
+      padding: EdgeInsetsDirectional.fromSTEB(4, topPad + 4, 16, 0),
       child: Row(
         children: [
           IconButton(
@@ -85,11 +88,21 @@ class ViewAllGrid extends StatelessWidget {
     required this.state,
     required this.scroll,
     required this.appBarH,
+    this.provider,
   });
 
   final ViewAllLoaded state;
   final ScrollController scroll;
   final double appBarH;
+
+  /// The source these cards came from, when it is not the app's current one.
+  ///
+  /// `ViewAllMovieCard` has taken this since it was written, for exactly the
+  /// case that now exists: a grid showing somebody ELSE'S catalogue has to say
+  /// so, or `/detail` resolves the title against whichever source happens to be
+  /// selected — which has never heard of a TMDB url. Nothing passed it through
+  /// until there was a screen that needed to.
+  final String? provider;
 
   @override
   Widget build(BuildContext context) {
@@ -101,6 +114,15 @@ class ViewAllGrid extends StatelessWidget {
       return ViewAllEmptyView(topPadding: appBarH);
     }
 
+    // Decided once for the whole grid, not per card: the caption block is a
+    // fixed height so that posters in a row line up, and a card that dropped
+    // the row on its own would sit 13px taller than its neighbours.
+    //
+    // Anime sources mostly carry no year at all, and the row was reserved
+    // anyway — so every card in those grids ended with an empty strip and the
+    // rows read as though something had failed to load between them.
+    final showYear = state.items.any((m) => m.year != null);
+
     return CustomScrollView(
       controller: scroll,
       slivers: [
@@ -108,12 +130,26 @@ class ViewAllGrid extends StatelessWidget {
           padding: EdgeInsets.fromLTRB(12, appBarH + 12, 12, 0),
           sliver: SliverGrid(
             delegate: SliverChildBuilderDelegate(
-              (_, index) => ViewAllMovieCard(movie: state.items[index]),
+              (context, index) => ItemAppear(
+                index: index,
+                columns: gridColumns(context),
+                child: ViewAllMovieCard(
+                  movie: state.items[index],
+                  showYear: showYear,
+                  provider: provider,
+                  // Position, not title: the same title can legitimately appear
+                  // twice in a paged grid, and two heroes sharing one tag on
+                  // screen is a hard assertion rather than a cosmetic bug.
+                  heroTag: 'viewall:$index',
+                ),
+              ),
               childCount: state.items.length,
             ),
             gridDelegate: responsiveGridDelegate(
               mobileCrossAxisCount: 3,
-              mainAxisSpacing: 14,
+              // 14 read as a gap between unrelated blocks rather than the
+              // seam between two rows of one grid.
+              mainAxisSpacing: 10,
               crossAxisSpacing: 8,
               childAspectRatio: 0.52,
             ),
@@ -141,20 +177,58 @@ class ViewAllGrid extends StatelessWidget {
   }
 }
 
-
 class ViewAllMovieCard extends StatelessWidget {
-  const ViewAllMovieCard({super.key, required this.movie});
+  const ViewAllMovieCard({
+    super.key,
+    required this.movie,
+    this.heroTag,
+    this.showYear = true,
+    this.provider,
+  });
 
   final MovieEntity movie;
+
+  /// The source this card came from, when it is not the app's current one.
+  ///
+  /// A grid of the active provider's own catalogue leaves this null and
+  /// `/detail` resolves against the ambient source, as it always has. A screen
+  /// showing somebody ELSE's catalogue — the sources hub — has to say so, or
+  /// the detail page looks the title up in the wrong source.
+  final String? provider;
+
+  /// Whether to reserve the year line. False when nothing in this grid has a
+  /// year, which is most anime catalogues.
+  final bool showYear;
+
+  /// Ties this poster to the one on the detail page, so it flies rather than
+  /// the page appearing from nothing. Null leaves the card as it was.
+  final String? heroTag;
 
   @override
   Widget build(BuildContext context) {
     final quality = primaryQuality(movie);
+    // The same value goes to the tile and to the shuttle: memCacheWidth is part
+    // of the image-cache key, so a shuttle that measured its own width would
+    // miss the cache this tile just filled and fly a blank frame.
+    final decodeWidth = isDesktopPlatform
+        ? null
+        : (MediaQuery.sizeOf(context).width /
+                  3 *
+                  MediaQuery.devicePixelRatioOf(context))
+              .round();
 
     return HoverTap(
       onTap: () {
         if (movie.url.isNotEmpty) {
-          context.push('/detail', extra: DetailArgs(contentUrl: movie.url, preview: movie));
+          context.push(
+            '/detail',
+            extra: DetailArgs(
+              contentUrl: movie.url,
+              preview: movie,
+              heroTag: heroTag,
+              provider: provider,
+            ),
+          );
         }
       },
       child: Column(
@@ -166,10 +240,16 @@ class ViewAllMovieCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  HomeNetworkImage(
+                  PosterHero(
+                    tag: heroTag,
                     url: movie.thumbnail,
-                    borderRadius: BorderRadius.zero,
-                    placeholderIcon: Icons.movie_outlined,
+                    memCacheWidth: decodeWidth,
+                    child: HomeNetworkImage(
+                      url: movie.thumbnail,
+                      borderRadius: BorderRadius.zero,
+                      placeholderIcon: Icons.movie_outlined,
+                      memCacheWidth: decodeWidth,
+                    ),
                   ),
                   const Positioned(
                     left: 0,
@@ -233,26 +313,26 @@ class ViewAllMovieCard extends StatelessWidget {
               ),
             ),
           ),
-          FixedTextLines(
-            fontSize: 10,
-            lineHeight: 1.3,
-            child: movie.year == null
-                ? null
-                : Text(
-                    movie.year.toString(),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 10,
-                      height: 1.3,
+          if (showYear)
+            FixedTextLines(
+              fontSize: 10,
+              lineHeight: 1.3,
+              child: movie.year == null
+                  ? null
+                  : Text(
+                      movie.year.toString(),
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 10,
+                        height: 1.3,
+                      ),
                     ),
-                  ),
-          ),
+            ),
         ],
       ),
     );
   }
 }
-
 
 class ViewAllSkeleton extends StatelessWidget {
   const ViewAllSkeleton({super.key, required this.appBarH});
@@ -274,7 +354,7 @@ class ViewAllSkeleton extends StatelessWidget {
               ),
               gridDelegate: responsiveGridDelegate(
                 mobileCrossAxisCount: 3,
-                mainAxisSpacing: 14,
+                mainAxisSpacing: 10,
                 crossAxisSpacing: 8,
                 childAspectRatio: 0.52,
               ),
@@ -293,6 +373,12 @@ class _SkeletonGridCard extends StatelessWidget {
   Widget build(BuildContext context) {
     // Caption block reserves exactly what ViewAllMovieCard reserves, so the
     // poster does not resize when the real cards replace these.
+    //
+    // It also has to *look* like what replaces it. The title slot is two lines
+    // of 11px text and used to be drawn as one 10px bar floating at the top of
+    // a two-line box, with the second line left blank — so the skeleton read
+    // as a one-line card and the grid jumped when the real titles wrapped. And
+    // the year bar was 50px against a four-digit year that measures about 22.
     return const Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -308,28 +394,47 @@ class _SkeletonGridCard extends StatelessWidget {
           fontSize: 11,
           lineHeight: 1.25,
           lines: 2,
-          child: HomeSkeletonBox(width: double.infinity, height: 10, radius: 3),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SkeletonLine(width: double.infinity),
+              SizedBox(height: 4),
+              // Short, because a title that wraps rarely fills its second line.
+              SkeletonLine(width: 46),
+            ],
+          ),
         ),
         FixedTextLines(
           fontSize: 10,
           lineHeight: 1.3,
-          child: HomeSkeletonBox(width: 50, height: 10, radius: 3),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: SkeletonLine(width: 24),
+          ),
         ),
       ],
     );
   }
 }
 
-
 class ViewAllErrorView extends StatelessWidget {
-  const ViewAllErrorView({super.key, required this.message, required this.onRetry});
+  const ViewAllErrorView({
+    super.key,
+    required this.message,
+    required this.onRetry,
+  });
 
   final String message;
   final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
-    final reason = message.trim();
+    // Classified rather than printed. The raw line here is whatever threw —
+    // for a 404 that is three sentences of Dio explaining what
+    // `validateStatus` is, which went to the screen under a headline that said
+    // "check your connection". Neither was true and neither was readable.
+    final failure = SourceFailure.of(message);
+    final reason = failure.detail?.trim() ?? '';
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
@@ -342,19 +447,27 @@ class ViewAllErrorView extends StatelessWidget {
               decoration: BoxDecoration(
                 color: AppColors.surfaceVariant,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.06),
-                ),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
               ),
-              child: const Icon(
-                Icons.wifi_off_rounded,
+              child: Icon(
+                switch (failure.kind) {
+                  SourceFailureKind.unreachable => Icons.wifi_off_rounded,
+                  SourceFailureKind.blocked => Icons.shield_outlined,
+                  SourceFailureKind.rateLimited =>
+                    Icons.hourglass_empty_rounded,
+                  SourceFailureKind.outdated => Icons.update_rounded,
+                  SourceFailureKind.incompatible ||
+                  SourceFailureKind.broken => Icons.extension_off_rounded,
+                  SourceFailureKind.gone ||
+                  SourceFailureKind.unknown => Icons.cloud_off_rounded,
+                },
                 color: AppColors.textSecondary,
                 size: 32,
               ),
             ),
             const SizedBox(height: 18),
             Text(
-              'errors.network'.tr(),
+              failure.headline,
               style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 16,
@@ -373,13 +486,14 @@ class ViewAllErrorView extends StatelessWidget {
               ),
               textAlign: TextAlign.center,
             ),
-            // The reason was passed in and then dropped on the floor, so every
-            // failure looked like "you are offline". Matches HomeErrorView.
+            // The raw line is kept, because it is what makes a bug report
+            // worth reading — but two lines of it, under the sentence, rather
+            // than a paragraph of framework prose where the explanation goes.
             if (reason.isNotEmpty) ...[
               const SizedBox(height: 10),
               SelectableText(
                 reason,
-                maxLines: 4,
+                maxLines: 2,
                 style: const TextStyle(
                   color: AppColors.textHint,
                   fontSize: 11,
@@ -389,9 +503,11 @@ class ViewAllErrorView extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 24),
-            SizedBox(
-              width: 156,
-              height: 44,
+            ConstrainedBox(
+              // Minimum, not fixed: "Retry" is five characters in English
+              // and fourteen in Portuguese, and a hard width clips the
+              // longer ones silently in a release build.
+              constraints: const BoxConstraints(minWidth: 156, minHeight: 44),
               child: ElevatedButton(
                 onPressed: onRetry,
                 child: Text('general.retry'.tr()),

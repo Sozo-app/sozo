@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -57,19 +58,22 @@ class _LogViewerSheetState extends State<LogViewerSheet> {
     await Clipboard.setData(ClipboardData(text: _log.formatForShare()));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Logs copied'), duration: Duration(seconds: 1)),
+      SnackBar(
+        content: Text('player.logs_copied'.tr()),
+        duration: const Duration(seconds: 1),
+      ),
     );
   }
 
   Future<void> _share() async {
-    await Share.share(_log.formatForShare(), subject: 'Soplay player logs');
+    await Share.share(_log.formatForShare(), subject: 'Sozo player logs');
   }
 
   Color _colorFor(LogLevel level) => switch (level) {
-        LogLevel.error => const Color(0xFFFF6B6B),
-        LogLevel.warn => const Color(0xFFFFC857),
-        LogLevel.info => Colors.white70,
-      };
+    LogLevel.error => const Color(0xFFFF6B6B),
+    LogLevel.warn => const Color(0xFFFFC857),
+    LogLevel.info => Colors.white70,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -82,11 +86,14 @@ class _LogViewerSheetState extends State<LogViewerSheet> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+              padding: const EdgeInsetsDirectional.fromSTEB(16, 14, 8, 8),
               child: Row(
                 children: [
-                  const Icon(Icons.bug_report_outlined,
-                      color: Colors.white, size: 18),
+                  const Icon(
+                    Icons.bug_report_outlined,
+                    color: Colors.white,
+                    size: 18,
+                  ),
                   const SizedBox(width: 10),
                   Text(
                     'Player logs (${lines.length})',
@@ -98,21 +105,30 @@ class _LogViewerSheetState extends State<LogViewerSheet> {
                   ),
                   const Spacer(),
                   IconButton(
-                    tooltip: 'Copy',
-                    icon: const Icon(Icons.copy_rounded,
-                        color: Colors.white70, size: 20),
+                    tooltip: 'general.copy'.tr(),
+                    icon: const Icon(
+                      Icons.copy_rounded,
+                      color: Colors.white70,
+                      size: 20,
+                    ),
                     onPressed: lines.isEmpty ? null : _copy,
                   ),
                   IconButton(
-                    tooltip: 'Share',
-                    icon: const Icon(Icons.ios_share_rounded,
-                        color: Colors.white70, size: 20),
+                    tooltip: 'general.share'.tr(),
+                    icon: const Icon(
+                      Icons.ios_share_rounded,
+                      color: Colors.white70,
+                      size: 20,
+                    ),
                     onPressed: lines.isEmpty ? null : _share,
                   ),
                   IconButton(
-                    tooltip: 'Clear',
-                    icon: const Icon(Icons.delete_outline_rounded,
-                        color: Colors.white70, size: 20),
+                    tooltip: 'general.clear'.tr(),
+                    icon: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: Colors.white70,
+                      size: 20,
+                    ),
                     onPressed: lines.isEmpty ? null : _log.clear,
                   ),
                 ],
@@ -121,10 +137,12 @@ class _LogViewerSheetState extends State<LogViewerSheet> {
             const Divider(color: Colors.white12, height: 1),
             Flexible(
               child: lines.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 48),
-                      child: Text('No logs yet',
-                          style: TextStyle(color: Colors.white38)),
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 48),
+                      child: Text(
+                        'player.logs_empty'.tr(),
+                        style: const TextStyle(color: Colors.white38),
+                      ),
                     )
                   : Scrollbar(
                       controller: _scroll,
@@ -147,12 +165,12 @@ class _LogViewerSheetState extends State<LogViewerSheet> {
                                   TextSpan(
                                     text: '${_log.stamp(l.time)}  ',
                                     style: const TextStyle(
-                                        color: Colors.white30),
+                                      color: Colors.white30,
+                                    ),
                                   ),
                                   TextSpan(
                                     text: l.message,
-                                    style: TextStyle(
-                                        color: _colorFor(l.level)),
+                                    style: TextStyle(color: _colorFor(l.level)),
                                   ),
                                 ],
                               ),

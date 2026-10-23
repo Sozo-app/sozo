@@ -17,13 +17,41 @@ enum _SidePanel { none, episodes, quality }
 
 enum _LoadingStage { resolving, loading }
 
-enum _SwipeType { brightness, volume }
+/// What the player is switching between, while it is switching.
+///
+/// The loading overlay used to say "Loading video" whether it was opening an
+/// episode for the first time or moving from one mirror to another. Those are
+/// different events: the second one follows a deliberate choice somebody just
+/// made, and the useful thing to show is that the choice was heard — which
+/// server, and that it is on its way — not a generic spinner that looks
+/// identical to the failure they were trying to escape.
+class ServerSwitch {
+  const ServerSwitch({required this.from, required this.to});
+
+  /// Null when nothing was playing yet, so the overlay shows a destination
+  /// rather than a journey.
+  final String? from;
+  final String to;
+}
+
+/// `zoom` carries a scale factor (1.0-3.0), not a 0-1 level like the other
+/// two, and is drawn as a centre pill rather than an edge bar.
+enum _SwipeType { brightness, volume, zoom }
 
 class _SwipeIndicator {
   final _SwipeType type;
   final double value;
   const _SwipeIndicator(this.type, this.value);
 }
+
+/// Pinch-zoom bounds. Top level rather than static on the State, because the
+/// gesture code lives in an extension and Dart will not let an extension reach
+/// a static member of the type it extends unqualified.
+///
+/// 3x is where a 1080p frame stops being watchable; below 1.0 there is nothing
+/// to show but letterbox.
+const double _kMinZoom = 1.0;
+const double _kMaxZoom = 3.0;
 
 const _kSubLang = 'sub';
 const _kDubLang = 'dub';
@@ -38,10 +66,12 @@ const List<int> _subtitleColorPresets = <int>[
 ];
 
 const MethodChannel _pipChannel = MethodChannel('soplay/pip');
+
+/// iOS picture-in-picture, handed to a native player — see NativePip.swift.
+const MethodChannel _iosPipChannel = MethodChannel('soplay/ios_pip');
 const MethodChannel _systemControlsChannel = MethodChannel(
   'soplay/system_controls',
 );
-const double _scrubSecondsPerFullSwipe = 90;
 
 /// Seek-button icons for the step chosen in Settings → Player.
 ///
@@ -50,16 +80,16 @@ const double _scrubSecondsPerFullSwipe = 90;
 /// actually jumps. Anything else falls back to the 10s icon rather than
 /// silently lying about a number.
 IconData _rewindIconFor(int seconds) => switch (seconds) {
-      5 => Icons.replay_5_rounded,
-      30 => Icons.replay_30_rounded,
-      _ => Icons.replay_10_rounded,
-    };
+  5 => Icons.replay_5_rounded,
+  30 => Icons.replay_30_rounded,
+  _ => Icons.replay_10_rounded,
+};
 
 IconData _forwardIconFor(int seconds) => switch (seconds) {
-      5 => Icons.forward_5_rounded,
-      30 => Icons.forward_30_rounded,
-      _ => Icons.forward_10_rounded,
-    };
+  5 => Icons.forward_5_rounded,
+  30 => Icons.forward_30_rounded,
+  _ => Icons.forward_10_rounded,
+};
 
 String _formatDuration(Duration d) {
   final hours = d.inHours;
@@ -76,30 +106,39 @@ class _ScrubState {
   final Duration baseline;
   final Duration duration;
   final double deltaPx;
-  final double span;
+
+  /// The screen's long side, what a full swipe is measured against.
+  final double widthPx;
 
   const _ScrubState({
     required this.baseline,
     required this.duration,
     required this.deltaPx,
-    required this.span,
+    required this.widthPx,
   });
 
-  _ScrubState copyWith({double? deltaPx, double? span}) => _ScrubState(
+  _ScrubState copyWith({double? deltaPx}) => _ScrubState(
     baseline: baseline,
     duration: duration,
     deltaPx: deltaPx ?? this.deltaPx,
-    span: span ?? this.span,
+    widthPx: widthPx,
   );
 
-  Duration previewPosition(double secondsPerFullSwipe) {
-    if (span <= 0 || duration.inMilliseconds <= 0) return baseline;
-    final fraction = (deltaPx / span).clamp(-1.0, 1.0);
-    final deltaMs = (fraction * secondsPerFullSwipe * 1000).round();
-    final target = baseline.inMilliseconds + deltaMs;
-    final clamped = target.clamp(0, duration.inMilliseconds);
-    return Duration(milliseconds: clamped);
-  }
+  /// Where releasing now would land; see [ScrubCurve].
+  Duration previewPosition() => Duration(
+    milliseconds: ScrubCurve.targetMs(
+      baselineMs: baseline.inMilliseconds,
+      durationMs: duration.inMilliseconds,
+      deltaPx: deltaPx,
+      widthPx: widthPx,
+    ),
+  );
+
+  /// Back where it started, or closer to it than the two seconds the label
+  /// shows: releasing now changes nothing, as the card says.
+  bool get cancels =>
+      ScrubCurve.cancels(deltaPx) ||
+      (previewPosition() - baseline).inSeconds.abs() < 2;
 }
 
 class _VttThumbnail {
@@ -123,8 +162,7 @@ class _VttThumbnail {
 
   bool get hasSprite => w > 0 && h > 0;
 
-  bool contains(Duration position) =>
-      position >= start && position < end;
+  bool contains(Duration position) => position >= start && position < end;
 
   static List<_VttThumbnail> parse(String vttBody, String baseUrl) {
     final lines = vttBody.split('\n').map((l) => l.trim()).toList();
@@ -178,15 +216,17 @@ class _VttThumbnail {
         url = baseUri.resolve(url).toString();
       }
 
-      results.add(_VttThumbnail(
-        start: start,
-        end: end,
-        imageUrl: url,
-        x: x,
-        y: y,
-        w: w,
-        h: h,
-      ));
+      results.add(
+        _VttThumbnail(
+          start: start,
+          end: end,
+          imageUrl: url,
+          x: x,
+          y: y,
+          w: w,
+          h: h,
+        ),
+      );
     }
     return results;
   }

@@ -1,20 +1,25 @@
+import 'package:soplay/core/content/content_mode.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_about_tab.dart';
+import 'package:soplay/core/content/catalogue.dart';
+import 'package:soplay/features/detail/domain/services/catalogue_resolver.dart';
+import 'package:soplay/features/download/presentation/widgets/download_choice_sheet.dart';
 import 'dart:async';
-import 'dart:ui';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:soplay/core/player/source_ladder.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/storage/hive_service.dart';
-import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/core/tv/tv.dart';
 import 'package:soplay/features/banners/domain/entities/banner_item.dart';
 import 'package:soplay/features/banners/presentation/widgets/banners_carousel.dart';
 import 'package:soplay/features/cloudflare/cloudflare_solver.dart';
+import 'package:soplay/features/detail/domain/download_choices.dart';
 import 'package:soplay/features/detail/domain/usecases/resolve_media_usecase.dart';
 import 'package:soplay/features/detail/domain/entities/detail_args.dart';
 import 'package:soplay/features/detail/domain/entities/detail_entity.dart';
@@ -29,47 +34,82 @@ import 'package:soplay/features/detail/presentation/blocs/favorite_bloc/favorite
 import 'package:soplay/features/detail/presentation/blocs/favorite_bloc/favorite_state.dart';
 import 'package:soplay/features/history/data/history_service.dart';
 import 'package:soplay/features/tracker/data/follow_service.dart';
-import 'package:soplay/features/tracker/domain/entities/followed_title.dart';
+import 'package:soplay/features/tracker/data/release_watch.dart';
+import 'package:soplay/features/tracker/domain/release_entry.dart';
+import 'package:soplay/features/tracker/presentation/widgets/follow_bell.dart';
+import 'package:soplay/features/tracker/presentation/widgets/release_callout.dart';
 import 'package:soplay/features/my_list/data/datasources/my_list_local_data_source.dart';
 import 'package:soplay/features/my_list/data/private_list_service.dart';
 import 'package:soplay/features/my_list/domain/entities/favorite_entity.dart';
 import 'package:soplay/features/private_list/presentation/private_unlock.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:soplay/features/detail/presentation/widgets/player_engine_sheet.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_relations_tab.dart';
 import 'package:soplay/features/detail/presentation/widgets/alternate_source_sheet.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_cast_tab.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_comments_tab.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_hero.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_info.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_more_menu.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_save_sheet.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_related.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_screenshots.dart';
 import 'package:soplay/features/detail/presentation/widgets/detail_skeleton.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_circle_button.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_preview_skeleton.dart';
+import 'package:soplay/core/widgets/app_tab_bar.dart';
+import 'package:soplay/core/widgets/poster_hero.dart';
+import 'package:soplay/features/home/domain/entities/movie.dart';
 import 'package:soplay/features/detail/domain/entities/media_resolve_entity.dart';
-import 'package:soplay/features/download/data/download_service.dart';
-import 'package:soplay/features/download/domain/entities/download_item.dart';
+import 'package:soplay/features/detail/domain/entities/subtitle_entity.dart';
+import 'package:soplay/features/download/domain/entities/download_request.dart';
+import 'package:soplay/features/download/domain/usecases/enqueue_download_usecase.dart';
+import 'package:soplay/features/download/domain/usecases/get_downloads_usecase.dart';
+import 'package:soplay/features/download/presentation/download_messages.dart';
+import 'package:soplay/features/download/presentation/widgets/offline_copy_banner.dart';
 import 'package:showcaseview/showcaseview.dart';
+import 'package:soplay/features/support/presentation/widgets/support_suggestion.dart';
+import 'package:soplay/features/support/data/support_models.dart';
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key, required this.args});
   final DetailArgs args;
 
+  /// The provider the page was opened with, or — when none was given — the
+  /// catalogue the link itself belongs to. See [Catalogue.forUrl].
+  String? get _provider =>
+      args.provider ??
+      Catalogue.forUrl(
+        args.contentUrl,
+        current: getIt<HiveService>().getCurrentProvider(),
+      )?.id;
+
   @override
   Widget build(BuildContext context) {
+    final provider = _provider;
     return MultiBlocProvider(
       providers: [
         BlocProvider(
-          create: (_) =>
-              getIt<DetailBloc>()
-                ..add(DetailLoad(args.contentUrl, provider: args.provider)),
+          create: (_) => getIt<DetailBloc>()
+            ..add(
+              DetailLoad(
+                args.contentUrl,
+                provider: provider,
+                hint: args.preview,
+              ),
+            ),
         ),
         BlocProvider(create: (_) => getIt<EpisodesBloc>()),
         BlocProvider(create: (_) => getIt<FavoriteBloc>()),
       ],
       child: _DetailScaffold(
         contentUrl: args.contentUrl,
-        provider: args.provider,
+        provider: provider,
         autoPlay: args.autoPlay,
         resumeEpisodeIndex: args.resumeEpisodeIndex,
+        preview: args.preview,
+        heroTag: args.heroTag,
+        focusEpisode: args.focusEpisode,
       ),
     );
   }
@@ -81,14 +121,27 @@ class _DetailScaffold extends StatelessWidget {
     this.provider,
     this.autoPlay = false,
     this.resumeEpisodeIndex,
+    this.preview,
+    this.heroTag,
+    this.focusEpisode,
   });
   final String contentUrl;
   final String? provider;
   final bool autoPlay;
   final int? resumeEpisodeIndex;
 
+  /// What the caller already knew about this title — poster, name, year.
+  /// Enough to draw the top of the page before the request lands.
+  final MovieEntity? preview;
+  final String? heroTag;
+  final int? focusEpisode;
+
   @override
   Widget build(BuildContext context) {
+    // Read once into a local so it promotes: `preview` is a public field, and
+    // Dart only promotes private ones.
+    final preview = this.preview;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light,
       child: Scaffold(
@@ -114,35 +167,67 @@ class _DetailScaffold extends StatelessWidget {
           child: BlocBuilder<DetailBloc, DetailState>(
             builder: (context, state) {
               return switch (state) {
+                // A shimmer here threw away what the caller already handed
+                // us. The poster, the title and the year came in with the tap
+                // and are correct; only the description, cast and episodes are
+                // genuinely unknown. Showing grey boxes over all of it also
+                // gave the Hero nothing to land on, so the poster flew out of
+                // the grid and vanished into a placeholder.
                 DetailInitial() || DetailLoading() => Stack(
                   children: [
-                    const DetailSkeleton(),
+                    if (preview != null)
+                      DetailPreviewSkeleton(preview: preview, heroTag: heroTag)
+                    else
+                      const DetailSkeleton(),
                     _BackOnlyBar(onBack: () => _goBack(context)),
                   ],
                 ),
-                DetailLoaded(:final detail) =>
-                  BlocBuilder<FavoriteBloc, FavoriteState>(
-                    builder: (context, favoriteState) {
-                      if (favoriteState is FavoriteInitial) {
-                        return Stack(
-                          children: [
-                            const DetailSkeleton(),
-                            _BackOnlyBar(onBack: () => _goBack(context)),
-                          ],
-                        );
-                      }
+                // Built on DetailLoaded alone.
+                //
+                // There used to be a second skeleton here, held until
+                // FavoriteBloc left FavoriteInitial — but FavoriteLoad is only
+                // dispatched from the listener above, as an async event, so
+                // there was ALWAYS at least one shimmer frame after the real
+                // detail was already in memory. The poster finished its flight
+                // into a header that then blinked back to grey.
+                //
+                // Nothing downstream needed the wait: the top bar has its own
+                // BlocBuilder<FavoriteBloc> and already branches on
+                // showListAction. It also removes a latent lock-up — a silent
+                // DetailLoaded refresh that skips DetailLoading would strand
+                // the page on the skeleton for good.
+                DetailLoaded(
+                  :final detail,
+                  :final via,
+                  :final resolving,
+                  :final offline,
+                ) =>
+                  Builder(
+                    builder: (context) {
                       return _DetailView(
                         detail: detail,
-                        provider: provider,
+                        // A catalogue title was loaded from the source found
+                        // for it, and everything downstream — episodes, play,
+                        // download — must ask that source, not the catalogue.
+                        provider: via?.providerId ?? provider,
+                        via: via,
+                        resolvingSource: resolving,
+                        offline: offline,
                         autoPlay: autoPlay,
                         resumeEpisodeIndex: resumeEpisodeIndex,
+                        heroTag: heroTag,
+                        focusEpisode: focusEpisode,
                       );
                     },
                   ),
                 DetailError(:final message) => _ErrorView(
-                  message: message,
+                  message: message.startsWith('catalogue.')
+                      ? message.tr()
+                      : message,
+                  provider: provider,
+                  content: contentUrl,
                   onRetry: () => context.read<DetailBloc>().add(
-                    DetailLoad(contentUrl, provider: provider),
+                    DetailLoad(contentUrl, provider: provider, hint: preview),
                   ),
                   onSolveCloudflare: isCloudflareError(message)
                       ? () async {
@@ -185,13 +270,32 @@ class _DetailView extends StatefulWidget {
   const _DetailView({
     required this.detail,
     this.provider,
+    this.via,
+    this.resolvingSource = false,
+    this.offline = false,
     this.autoPlay = false,
     this.resumeEpisodeIndex,
+    this.heroTag,
+    this.focusEpisode,
   });
   final DetailEntity detail;
+
+  /// Opened from the copy saved with the downloads. See [DetailLoaded.offline].
+  final bool offline;
   final String? provider;
+
+  /// The source this title was found on, when it came from a catalogue.
+  final CatalogueLink? via;
+
+  /// The search for that source has not finished. See [DetailLoaded.resolving].
+  final bool resolvingSource;
   final bool autoPlay;
   final int? resumeEpisodeIndex;
+  final String? heroTag;
+
+  /// The new episode a release notification was about. See
+  /// [DetailArgs.focusEpisode].
+  final int? focusEpisode;
 
   @override
   State<_DetailView> createState() => _DetailViewState();
@@ -218,6 +322,20 @@ class _DetailViewState extends State<_DetailView>
   bool _privateShowcaseStarted = false;
 
   final ValueNotifier<double> _collapse = ValueNotifier<double>(0);
+
+  /// Whether the header is still near enough the top for a flight to make
+  /// sense on the way back.
+  ///
+  /// The Hero stays in the tree while the page is scrolled — invisible under
+  /// the scrim, but with an unchanged global rect. Pressing back from there
+  /// animated a full-opacity poster out of nothing near the top edge, into a
+  /// grid the viewer could not see. Dropping the tag makes Hero find no
+  /// partner and the pop falls back to the route's own fade, which is what a
+  /// scrolled page should do.
+  ///
+  /// Read when a flight STARTS, so flipping it mid-scroll costs one rebuild
+  /// rather than one per frame.
+  final ValueNotifier<bool> _heroActive = ValueNotifier<bool>(true);
   final ValueNotifier<bool> _showPill = ValueNotifier<bool>(false);
 
   late final List<String> _tabs;
@@ -227,6 +345,19 @@ class _DetailViewState extends State<_DetailView>
   bool _autoPlayTriggered = false;
   bool _isFollowing = false;
 
+  /// The release this page was opened for, while its card is up.
+  ReleaseEntry? _release;
+
+  /// Handed to the episode list the next time it opens, then spent.
+  int? _focusOnOpen;
+
+  /// Whether the next episode list opened should go straight on to the
+  /// episode history points at. True only for the auto-play that Continue
+  /// Watching starts, and spent by the first list it opens: a later Play from
+  /// this page is somebody choosing to browse.
+  late bool _resumeOnOpen =
+      widget.autoPlay && widget.resumeEpisodeIndex != null;
+
   @override
   void initState() {
     super.initState();
@@ -235,8 +366,23 @@ class _DetailViewState extends State<_DetailView>
         (widget.detail.director?.trim().isNotEmpty ?? false);
     _hasShots = widget.detail.screenshots.isNotEmpty;
     _isFollowing = getIt<FollowService>().isFollowed(widget.detail.contentUrl);
+    getIt<FollowService>().revision.addListener(_onFollowsChanged);
+    _release = releaseForCallout(
+      widget.detail.contentUrl,
+      widget.focusEpisode,
+      reading: widget.detail.provider.opensReader,
+    );
+    // Opening the title is what "seen" means for the feed and its NEW badge.
+    unawaited(getIt<ReleaseWatch>().markOpened(widget.detail.contentUrl));
     _tabs = [
+      // First for a title that came with a record: the record is the point
+      // of a catalogue page. A source's page has no such tab.
+      if (widget.detail.record != null) 'About',
       'Similar',
+      // Always offered, because whether there is anything to show cannot be
+      // known without asking AniList — and asking on every detail load would
+      // pay for it on every title nobody opens the tab for.
+      'Relations',
       if (_hasCast) 'Cast',
       'Comments',
       if (_hasShots) 'Screenshots',
@@ -335,6 +481,11 @@ class _DetailViewState extends State<_DetailView>
       _collapse.value = v;
     }
 
+    // Assigned only on a change: a ValueNotifier notifies on every set, and
+    // this one drives a rebuild of the whole header.
+    final active = v < 0.4;
+    if (active != _heroActive.value) _heroActive.value = active;
+
     final pinLine = MediaQuery.paddingOf(context).top + kToolbarHeight;
     final stripBox =
         _tabStripKey.currentContext?.findRenderObject() as RenderBox?;
@@ -357,18 +508,22 @@ class _DetailViewState extends State<_DetailView>
 
   @override
   void dispose() {
+    getIt<FollowService>().revision.removeListener(_onFollowsChanged);
     _showcaseView?.unregister();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _collapse.dispose();
+    _heroActive.dispose();
     _showPill.dispose();
     super.dispose();
   }
 
   String _tabLabel(String tab) => switch (tab) {
+    'About' => 'detail.about'.tr(),
     'Similar' => 'detail.similar'.tr(),
+    'Relations' => 'detail.relations'.tr(),
     'Cast' => 'movie.cast'.tr(),
     'Comments' => 'detail.comments'.tr(),
     'Screenshots' => 'detail.screenshots'.tr(),
@@ -392,7 +547,13 @@ class _DetailViewState extends State<_DetailView>
       child: KeyedSubtree(
         key: ValueKey('detail-tab-$tab'),
         child: switch (tab) {
+          'About' => DetailAboutTab(record: detail.record!),
           'Similar' => DetailRelatedSection(related: detail.related),
+          'Relations' => DetailRelationsTab(
+            provider: detail.provider,
+            contentUrl: detail.contentUrl,
+            title: detail.title,
+          ),
           'Cast' => DetailCastTab(cast: detail.cast, director: detail.director),
           'Comments' => DetailCommentsTab(
             provider: detail.provider,
@@ -427,6 +588,18 @@ class _DetailViewState extends State<_DetailView>
   }
 
   void _onPrimaryAction() {
+    // A catalogue title with no source has nothing to play yet. The app bar
+    // pill reaches here too, so the redirect lives here rather than only on
+    // the body's button.
+    if (Catalogue.isId(widget.detail.provider)) {
+      // Unless the automatic search is still running, in which case a second
+      // fan-out over the same sources for the same title is the one thing that
+      // cannot help.
+      if (widget.resolvingSource) return;
+      _onFindOtherSources();
+      return;
+    }
+    if (_playLocalMovie()) return;
     final state = context.read<EpisodesBloc>().state;
     if (state is EpisodesLoading) return;
     _pendingDownload = false;
@@ -435,6 +608,38 @@ class _DetailViewState extends State<_DetailView>
     );
   }
 
+  /// A downloaded film plays from disk without asking the source anything.
+  bool _playLocalMovie() {
+    final downloads = getIt<GetDownloadsUseCase>();
+    final local = downloads.localVideo(contentUrl: widget.detail.contentUrl);
+    if (local == null) return false;
+    unawaited(_openLocalMovie(local, downloads.thumbnailOf(local.item)));
+    return true;
+  }
+
+  Future<void> _openLocalMovie(LocalVideo local, String? thumbnail) async {
+    final detail = widget.detail;
+    final history = getIt<HistoryService>().get(detail.contentUrl);
+    if (!await confirmPlayerEngine(context) || !mounted) return;
+    context.push(
+      '/player',
+      extra: PlayerArgs(
+        title: detail.title,
+        provider: local.item.provider,
+        headers: const {},
+        contentUrl: detail.contentUrl,
+        thumbnail: thumbnail ?? detail.thumbnail,
+        movieUrl: local.url,
+        type: local.type,
+        showDownloadAction: false,
+        resumePosition: Duration(milliseconds: history?.positionMs ?? 0),
+      ),
+    );
+  }
+
+  /// The last episode list came from the saved copy; the list page says so.
+  bool _episodesOffline = false;
+
   /// Play and download need the same thing first — the provider's playback
   /// payload — and it arrives asynchronously through the bloc. Rather than a
   /// second loader, the intent is remembered and the one result is routed when
@@ -442,6 +647,10 @@ class _DetailViewState extends State<_DetailView>
   bool _pendingDownload = false;
 
   void _onDownloadAction() {
+    if (Catalogue.isId(widget.detail.provider)) {
+      _onFindOtherSources();
+      return;
+    }
     final state = context.read<EpisodesBloc>().state;
     if (state is EpisodesLoading) return;
     _pendingDownload = true;
@@ -469,28 +678,23 @@ class _DetailViewState extends State<_DetailView>
   }
 
   Future<void> _downloadMovie(PlaybackEntity playback) async {
-    final downloads = getIt<DownloadService>();
-    final id = DownloadService.videoId(contentUrl: widget.detail.contentUrl);
-
-    final existing = downloads.get(id);
-    if (existing != null && existing.status != DownloadStatus.failed) {
-      _showSnack(existing.status == DownloadStatus.completed
-          ? 'detail.download_already'.tr()
-          : 'detail.download_in_progress'.tr());
-      return;
-    }
-
+    // Whether this is already queued, running or finished is the repository's
+    // question — it is the only thing that can also tell whether a row marked
+    // "downloaded" still has a file behind it. Asking here meant a stale row
+    // blocked the very re-download that would have repaired it.
     var url = _pickMovieUrl(playback);
     var headers = playback.headers;
+    var sources = playback.videoSources;
+    var type = playback.type;
+    var subtitles = const <SubtitleEntity>[];
 
     // An embed page rather than a stream: the same resolve the player does on
     // open. Downloading the page would produce an unplayable HTML file.
     final ref = playback.episodes.isNotEmpty
         ? playback.episodes.first.mediaRef
         : '';
-    final needsResolve = playback.type == 'webview-extract' ||
-        url == null ||
-        url.isEmpty;
+    final needsResolve =
+        playback.type == 'webview-extract' || url == null || url.isEmpty;
     if (needsResolve && ref.isNotEmpty) {
       final result = await getIt<ResolveMediaUseCase>()(
         ref: ref,
@@ -499,8 +703,24 @@ class _DetailViewState extends State<_DetailView>
       if (!mounted) return;
       if (result is Success<MediaResolveEntity> &&
           result.value.videoUrl.isNotEmpty) {
+        // Same hazard as the episode list: under a directive this url is the
+        // embed page, and nothing here will sniff it. Refuse with advice
+        // rather than downloading an HTML file that fails on first open.
+        if (!DownloadChoices.isDownloadableUrl(
+          url: result.value.videoUrl,
+          type: result.value.type,
+          hasDirective: result.value.extractor != null,
+        )) {
+          _showSnack('detail.download_needs_playback'.tr());
+          return;
+        }
         url = result.value.videoUrl;
         headers = result.value.headers;
+        sources = result.value.videoSources;
+        type = result.value.type;
+        if (result.value.subtitles.isNotEmpty) {
+          subtitles = result.value.subtitles;
+        }
       }
     }
 
@@ -509,22 +729,29 @@ class _DetailViewState extends State<_DetailView>
       return;
     }
 
-    final started = await downloads.startDownload(DownloadItem(
-      id: id,
-      contentUrl: widget.detail.contentUrl,
-      provider: playback.provider,
-      title: widget.detail.title,
-      thumbnail: widget.detail.thumbnail,
-      videoUrl: url,
-      localPath: '',
+    final selection = await chooseDownload(
+      context,
+      url: url,
       headers: headers,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-      isSerial: false,
-    ));
+      type: type,
+      sources: sources,
+    );
+    if (!mounted || selection == null) return;
+
+    final outcome = await getIt<EnqueueDownloadUseCase>()(
+      DownloadRequest.video(
+        contentUrl: widget.detail.contentUrl,
+        provider: playback.provider,
+        title: widget.detail.title,
+        sourceUrl: selection.url,
+        videoHeight: selection.height,
+        thumbnailUrl: widget.detail.thumbnail,
+        headers: selection.headers,
+        subtitles: subtitles,
+      ),
+    );
     if (!mounted) return;
-    _showSnack(started
-        ? 'detail.download_started'.tr()
-        : 'detail.download_needs_permission'.tr());
+    _showSnack(downloadOutcomeMessage(outcome));
   }
 
   void _toggleMyList() {
@@ -672,8 +899,84 @@ class _DetailViewState extends State<_DetailView>
   ///
   /// Falls back to the old screen when nothing matched, rather than leaving a
   /// dead end: cross-search casts a wider net and lets them look by hand.
+  /// The viewer disagrees with the source that was picked for a catalogue
+  /// title. Forget the pick, so it is not repeated, and let them choose.
+  Future<void> _changeSource() async {
+    final via = widget.via;
+    if (via != null) {
+      // The catalogue id and the title's id in it are what the link was
+      // remembered under; the page only knows the source it landed on, so the
+      // key is rebuilt from the route it was opened with.
+      final args = GoRouterState.of(context).extra;
+      if (args is DetailArgs) {
+        final catalogue =
+            Catalogue.fromId(args.provider) ??
+            Catalogue.forUrl(
+              args.contentUrl,
+              current: getIt<HiveService>().getCurrentProvider(),
+            );
+        if (catalogue != null) {
+          await getIt<CatalogueResolver>().forget(
+            catalogue.id,
+            args.contentUrl,
+          );
+        }
+      }
+    }
+    if (!mounted) return;
+    await _onFindOtherSources();
+  }
+
   Future<void> _onFindOtherSources() async {
     final detail = widget.detail;
+    // A manga or a novel opens on the source that has it — its own page, with
+    // its chapters — not in the video player.
+    if (detail.provider.contentMode != ContentMode.video) {
+      final source = await AlternateSourceSheet.pickToRead(
+        context,
+        title: detail.title,
+        provider: detail.provider,
+        category: getIt<HiveService>().providerCategory(detail.provider),
+      );
+      if (!mounted || source == null) return;
+      // On a catalogue page (AniList manga or novels) the pick is remembered
+      // for the catalogue title, so it opens with this source next time.
+      final args = GoRouterState.of(context).extra;
+      if (args is DetailArgs) {
+        final catalogue =
+            Catalogue.fromId(args.provider) ??
+            Catalogue.forUrl(
+              args.contentUrl,
+              current: getIt<HiveService>().getCurrentProvider(),
+            );
+        if (catalogue != null) {
+          unawaited(
+            getIt<CatalogueResolver>().choose(
+              catalogue.id,
+              args.contentUrl,
+              CatalogueLink(
+                providerId: source.provider.id,
+                providerName: source.provider.name,
+                contentUrl: source.item.url,
+                catalogueId: catalogue.id,
+                providerImage: '',
+                approximate: false,
+              ),
+            ),
+          );
+        }
+      }
+      if (!mounted) return;
+      context.push(
+        '/detail',
+        extra: DetailArgs(
+          contentUrl: source.item.url,
+          provider: source.provider.id,
+          preview: source.item,
+        ),
+      );
+      return;
+    }
     final history = getIt<HistoryService>().get(detail.contentUrl);
 
     final args = await AlternateSourceSheet.show(
@@ -682,35 +985,27 @@ class _DetailViewState extends State<_DetailView>
       provider: detail.provider,
       category: getIt<HiveService>().providerCategory(detail.provider),
       episodeNumber: history?.episodeNumber,
-      headers: const {},
     );
     if (!mounted) return;
     if (args == null) return;
+    if (!await confirmPlayerEngine(context) || !mounted) return;
     context.push('/player', extra: args);
   }
 
-  Future<void> _toggleFollow() async {
-    final svc = getIt<FollowService>();
-    if (_isFollowing) {
-      await svc.unfollow(widget.detail.contentUrl);
-    } else {
-      final d = widget.detail;
-      await svc.follow(
-        FollowedTitle(
-          contentUrl: d.contentUrl,
-          provider: d.provider,
-          title: d.title,
-          thumbnail: d.thumbnail ?? '',
-          year: d.year,
-          addedAt: DateTime.now().millisecondsSinceEpoch,
-        ),
-      );
-    }
-    if (!mounted) return;
-    setState(() => _isFollowing = !_isFollowing);
-    _showSnack(
-      _isFollowing ? 'detail.following_on'.tr() : 'detail.following_off'.tr(),
-    );
+  Future<void> _toggleFollow() => toggleFollow(context, widget.detail);
+
+  void _onFollowsChanged() {
+    final now = getIt<FollowService>().isFollowed(widget.detail.contentUrl);
+    if (mounted && now != _isFollowing) setState(() => _isFollowing = now);
+  }
+
+  /// "Watch episode 12" on the release card: the list, opened on it.
+  void _openRelease() {
+    final release = _release;
+    if (release == null) return;
+    _focusOnOpen = release.fromEpisode;
+    _resumeOnOpen = false;
+    _onPrimaryAction();
   }
 
   /// The public link to this title — the one Share sends and Copy hands over.
@@ -723,6 +1018,30 @@ class _DetailViewState extends State<_DetailView>
 
   void _onShare() {
     Share.share('${widget.detail.title}\n$_shareLink');
+  }
+
+  /// Everything this title could be saved into, from the tick that already
+  /// means "keep this".
+  void _openSaveSheet() {
+    final detail = widget.detail;
+    final favState = context.read<FavoriteBloc>().state;
+    showDetailSaveSheet(
+      context,
+      entity: FavoriteEntity(
+        provider: detail.provider,
+        contentUrl: detail.contentUrl,
+        title: detail.title,
+        thumbnail: detail.thumbnail ?? '',
+      ),
+      isInList: favState is FavoriteReady && favState.isInList,
+      inPrivate: favState is FavoriteReady && favState.inPrivate,
+      showFollow: detail.isSerial,
+      following: _isFollowing,
+      onToggleMyList: _toggleMyList,
+      onToggleFollow: _toggleFollow,
+      onMoveToPrivate: _onMoveToPrivate,
+      onPrivateActions: _showPrivateActions,
+    );
   }
 
   void _showMoreMenu() {
@@ -795,6 +1114,8 @@ class _DetailViewState extends State<_DetailView>
   }
 
   void _openEpisodes(PlaybackEntity playback) {
+    final resume = _resumeOnOpen;
+    _resumeOnOpen = false;
     context.push(
       '/episodes',
       extra: EpisodesArgs(
@@ -810,27 +1131,46 @@ class _DetailViewState extends State<_DetailView>
         size: playback.size,
         total: playback.total,
         totalPages: playback.totalPages,
+        resumeFromHistory: resume,
+        offline: _episodesOffline,
+        focusEpisode: _takeFocus(),
       ),
     );
   }
 
+  int? _takeFocus() {
+    final focus = _focusOnOpen;
+    _focusOnOpen = null;
+    return focus;
+  }
+
   /// The stream a movie should use: the provider's own pick, else the default
   /// accessible source, else any accessible one, else whatever exists.
+  /// Which mirror this page plays and downloads.
+  ///
+  /// Was a hand-rolled walk — default first, then anything reachable, then
+  /// `sources[0]` — which is the fifth place in this app that answered the same
+  /// question its own way, and the one place that never looked at resolution.
+  /// On a provider that marks no default and lists sources in page order, that
+  /// is how a film with a 720p in the list downloaded as 360p.
+  ///
+  /// [SourceLadder] is that decision, already written and already tested.
   String? _pickMovieUrl(PlaybackEntity playback) {
     final direct = playback.playerSrc;
     if (direct != null && direct.isNotEmpty) return direct;
 
     final sources = playback.videoSources;
-    for (final s in sources) {
-      if (s.isDefault && s.accessible) return s.videoUrl;
-    }
-    for (final s in sources) {
-      if (s.accessible) return s.videoUrl;
-    }
-    return sources.isNotEmpty ? sources.first.videoUrl : null;
+    if (sources.isEmpty) return null;
+    final pick = SourceLadder(
+      sources: sources,
+      // No resolve directive is in hand here, so an embed page cannot be
+      // sniffed — `isPlayable` drops iframes for exactly that reason.
+      hasDirective: false,
+    ).initialPick();
+    return pick == null ? null : sources[pick].videoUrl;
   }
 
-  void _playMovieDirect(PlaybackEntity playback) {
+  Future<void> _playMovieDirect(PlaybackEntity playback) async {
     final movieUrl = _pickMovieUrl(playback);
     if (movieUrl == null || movieUrl.isEmpty) {
       _showSnack('detail.no_playable_source'.tr());
@@ -841,6 +1181,7 @@ class _DetailViewState extends State<_DetailView>
     if (historyItem != null) {
       resumePos = Duration(milliseconds: historyItem.positionMs);
     }
+    if (!await confirmPlayerEngine(context) || !mounted) return;
     context.push(
       '/player',
       extra: PlayerArgs(
@@ -867,21 +1208,43 @@ class _DetailViewState extends State<_DetailView>
       context: context,
       barrierDismissible: false,
       barrierColor: Colors.black54,
-      builder: (dctx) => Center(
-        child: Column(
+      // A card, not a bare spinner over the page. The unwrapped version drew
+      // the indicator and the word Cancel straight onto the hero image, with
+      // nothing behind them and nothing saying what was being waited for —
+      // white text over a bright poster, floating at whatever width the column
+      // happened to take.
+      builder: (dctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        contentPadding: const EdgeInsets.fromLTRB(24, 28, 24, 8),
+        content: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(color: AppColors.primary),
-            const SizedBox(height: 18),
-            TextButton(
-              onPressed: () => Navigator.of(dctx).pop(),
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: AppColors.primary,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Flexible(
               child: Text(
-                'general.cancel'.tr(),
-                style: const TextStyle(color: Colors.white70),
+                'player.extracting_media'.tr(),
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 15),
               ),
             ),
           ],
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: Text(
+              'general.cancel'.tr(),
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ),
+        ],
       ),
     ).whenComplete(() => dialogOpen = false);
 
@@ -906,6 +1269,7 @@ class _DetailViewState extends State<_DetailView>
         if (historyItem != null) {
           resumePos = Duration(milliseconds: historyItem.positionMs);
         }
+        if (!await confirmPlayerEngine(context) || !mounted) return;
         context.push(
           '/player',
           extra: PlayerArgs(
@@ -917,6 +1281,7 @@ class _DetailViewState extends State<_DetailView>
             movieUrl: value.videoUrl,
             mediaRef: ref,
             type: value.type,
+            live: value.live,
             // Without this the player has no directive, so a source whose url
             // is an embed page never gets sniffed and ExoPlayer is handed HTML.
             extractor: value.extractor,
@@ -933,10 +1298,25 @@ class _DetailViewState extends State<_DetailView>
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.paddingOf(context).top;
-    final screenH = MediaQuery.sizeOf(context).height;
-    final heroHeight = (screenH * 0.55).clamp(320.0, 440.0);
     const toolbarHeight = kToolbarHeight;
-    _collapseRange = heroHeight - toolbarHeight;
+
+    // The header's VISIBLE height — one definition, shared with both
+    // skeletons. When they disagreed, the header jumped the moment the
+    // response landed: right after the poster had finished flying into it,
+    // which is the worst possible moment for it to move.
+    final heroHeight = detailHeroHeight(context);
+
+    // What SliverAppBar wants is different from what the eye sees. A primary
+    // app bar computes `maxExtent = topPadding + expandedHeight` itself, so
+    // `expandedHeight` is the header MINUS the status bar. Passing the visible
+    // height here counts the inset twice — which is what it used to do, and
+    // why the header ended up ~50dp taller than the rectangle the poster had
+    // just been animated into.
+    final expandedHeight = heroHeight - topPad;
+
+    // Fully collapsed at `maxExtent - minExtent`, and the two topPads cancel:
+    // (topPad + expandedHeight) - (topPad + toolbarHeight).
+    _collapseRange = expandedHeight - toolbarHeight;
 
     final detail = widget.detail;
 
@@ -946,6 +1326,7 @@ class _DetailViewState extends State<_DetailView>
           listenWhen: (prev, curr) => prev.runtimeType != curr.runtimeType,
           listener: (context, state) {
             if (state is EpisodesLoaded) {
+              _episodesOffline = state.offline;
               if (_pendingDownload) {
                 _pendingDownload = false;
                 _handleDownload(state.playback);
@@ -987,7 +1368,7 @@ class _DetailViewState extends State<_DetailView>
             physics: const ClampingScrollPhysics(),
             slivers: [
               SliverAppBar(
-                expandedHeight: heroHeight + topPad,
+                expandedHeight: expandedHeight,
                 collapsedHeight: toolbarHeight,
                 pinned: true,
                 backgroundColor: AppColors.background,
@@ -997,27 +1378,89 @@ class _DetailViewState extends State<_DetailView>
                 toolbarHeight: toolbarHeight,
                 flexibleSpace: FlexibleSpaceBar(
                   collapseMode: CollapseMode.parallax,
-                  stretchModes: const [StretchMode.zoomBackground],
-                  background: ValueListenableBuilder<double>(
-                    valueListenable: _collapse,
-                    builder: (_, c, _) => Opacity(
-                      opacity: (1 - c).clamp(0.0, 1.0),
+                  // The header is built ONCE, in `child:`, and the collapse
+                  // paints a scrim over it.
+                  //
+                  // It used to sit inside the builder with `child:` unused, so
+                  // every scroll frame reconstructed the Hero, the
+                  // CachedNetworkImage, both gradients, the 26pt title and
+                  // _HeroOverlayFade's ancestor walk — the whole subtree, sixty
+                  // times a second, on a screen whose only change was one
+                  // double.
+                  //
+                  // The fade is a colour alpha rather than `Opacity`. Opacity
+                  // over a full-width ~500dp subtree is an offscreen
+                  // compositing pass per frame; a ColoredBox is a rectangle.
+                  // It also dissolves the poster INTO the page background
+                  // rather than into whatever happens to be behind it.
+                  //
+                  // Two nested listenables on purpose. The outer one flips at
+                  // most once per visit, so rebuilding the header on it costs
+                  // nothing; the inner one ticks every frame and gets the
+                  // header handed to it as `child`.
+                  background: ValueListenableBuilder<bool>(
+                    valueListenable: _heroActive,
+                    builder: (_, heroActive, _) => ValueListenableBuilder<double>(
+                      valueListenable: _collapse,
                       child: DetailHeroBackground(
                         thumbnail: detail.thumbnail,
                         title: detail.title,
+                        heroTag: heroActive ? widget.heroTag : null,
+                        trailerQuery: detail.trailerQuery,
+                        // The same threshold the hero uses: once the header is
+                        // mostly scrolled away there is nothing to preview, and
+                        // a video decoding under a page nobody can see is
+                        // battery spent on nothing.
+                        trailerActive: heroActive,
+                      ),
+                      builder: (_, c, child) => Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          child!,
+                          // IgnorePointer so the scrim never eats a tap meant
+                          // for the artwork underneath it.
+                          IgnorePointer(
+                            child: ColoredBox(
+                              color: AppColors.background.withValues(
+                                alpha: c.clamp(0.0, 1.0),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
               ),
+              if (_release != null)
+                SliverToBoxAdapter(
+                  child: ReleaseCallout(
+                    entry: _release!,
+                    onOpen: _openRelease,
+                    onDismiss: () => setState(() => _release = null),
+                  ),
+                ),
               SliverToBoxAdapter(
                 child: DetailContentHeader(
                   detail: detail,
                   onPrimaryAction: _onPrimaryAction,
                   onDownload: _onDownloadAction,
                   playButtonKey: _bodyPlayKey,
+                  via: widget.via,
+                  resolvingSource: widget.resolvingSource,
+                  onChangeSource: widget.via == null ? null : _changeSource,
+                  onFindSource: _onFindOtherSources,
                 ),
               ),
+              if (widget.offline)
+                SliverToBoxAdapter(
+                  child: OfflineCopyBanner(
+                    message: 'detail.offline_copy_desc'.tr(),
+                    onRetry: () => context.read<DetailBloc>().add(
+                      DetailLoad(detail.contentUrl, provider: widget.provider),
+                    ),
+                  ),
+                ),
               // Sponsor/CMS banner (detail_top placement). Opt-in: self-collapses
               // to nothing unless an admin creates a detail_top banner. Guest-safe.
               const SliverToBoxAdapter(
@@ -1025,36 +1468,30 @@ class _DetailViewState extends State<_DetailView>
                   placement: BannerPlacement.detailTop,
                   height: 130,
                   padding: EdgeInsets.fromLTRB(0, 2, 0, 10),
+                  // Nothing is held open while the request is in flight. The
+                  // usual answer is "no banner here", and reserving 130px for
+                  // it meant every detail page opened with a void between the
+                  // action row and the tabs, then closed it a few hundred
+                  // milliseconds later — moving the page under the poster at
+                  // the exact moment it was settling into the header.
+                  reserveWhileLoading: false,
                 ),
               ),
               SliverPersistentHeader(
                 pinned: true,
                 delegate: _TabBarDelegate(
                   stripKey: _tabStripKey,
-                  tabBar: TabBar(
+                  tabBar: AppTabBar(
+                    labels: _tabs.map(_tabLabel).toList(),
+                    // Detail owns the controller: the horizontal swipe at
+                    // _onSwipeEnd drives it directly, and a strip that built
+                    // its own would stop following the pages.
                     controller: _tabController,
-                    isScrollable: true,
-                    tabAlignment: TabAlignment.start,
-                    indicatorColor: AppColors.primary,
-                    indicatorWeight: 2.5,
-                    indicatorSize: TabBarIndicatorSize.label,
-                    labelColor: AppColors.textPrimary,
-                    unselectedLabelColor: AppColors.textHint,
-                    dividerColor: Colors.transparent,
-                    overlayColor: WidgetStateProperty.all(Colors.transparent),
-                    labelPadding: const EdgeInsets.symmetric(horizontal: 14),
+                    // onChanged left null so it does not fire alongside
+                    // _onTabChanged, which is already listening to the
+                    // controller.
+                    showDivider: false,
                     padding: EdgeInsets.zero,
-                    labelStyle: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.2,
-                    ),
-                    unselectedLabelStyle: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.2,
-                    ),
-                    tabs: _tabs.map((t) => Tab(text: _tabLabel(t))).toList(),
                   ),
                 ),
               ),
@@ -1129,7 +1566,7 @@ class _DetailViewState extends State<_DetailView>
                             showcaseScope: _showcaseScope,
                             onBack: _goBack,
                             onPrimaryAction: _onPrimaryAction,
-                            onAddToList: _toggleMyList,
+                            onSave: _openSaveSheet,
                             onMoveToPrivate: _onMoveToPrivate,
                             onPrivateActions: _showPrivateActions,
                             moreButtonKey: _moreButtonKey,
@@ -1194,7 +1631,7 @@ class _AnimatedTopBar extends StatelessWidget {
     required this.moreButtonKey,
     required this.onBack,
     required this.onPrimaryAction,
-    required this.onAddToList,
+    required this.onSave,
     required this.onMoveToPrivate,
     required this.onPrivateActions,
     required this.onMore,
@@ -1216,7 +1653,7 @@ class _AnimatedTopBar extends StatelessWidget {
   final GlobalKey moreButtonKey;
   final VoidCallback onBack;
   final VoidCallback onPrimaryAction;
-  final VoidCallback onAddToList;
+  final VoidCallback onSave;
   final VoidCallback onMoveToPrivate;
   final VoidCallback onPrivateActions;
   final VoidCallback onMore;
@@ -1229,18 +1666,27 @@ class _AnimatedTopBar extends StatelessWidget {
 
     return Stack(
       children: [
+        // The alpha is folded into the colours rather than wrapped in an
+        // Opacity. This Container paints a fill and a hairline border and
+        // nothing else, so an offscreen compositing pass per scroll frame
+        // bought exactly the same pixels as multiplying two alphas.
         IgnorePointer(
-          child: Opacity(
-            opacity: solidOpacity,
-            child: Container(
-              height: topPad + kToolbarHeight,
-              decoration: BoxDecoration(
-                color: AppColors.background.withValues(alpha: 0.96),
-                border: Border(
-                  bottom: BorderSide(
-                    color: AppColors.divider.withValues(alpha: solidOpacity),
-                    width: 0.5,
+          child: Container(
+            height: topPad + kToolbarHeight,
+            decoration: BoxDecoration(
+              color: AppColors.background.withValues(
+                alpha: 0.96 * solidOpacity,
+              ),
+              border: Border(
+                bottom: BorderSide(
+                  // Squared on purpose: the border used to be inside the
+                  // Opacity too, so it faded with the fill AND with its own
+                  // alpha. Keeping that keeps the hairline from arriving
+                  // before the surface it sits on.
+                  color: AppColors.divider.withValues(
+                    alpha: solidOpacity * solidOpacity,
                   ),
+                  width: 0.5,
                 ),
               ),
             ),
@@ -1255,17 +1701,23 @@ class _AnimatedTopBar extends StatelessWidget {
                 _CircleIconButton(
                   icon: Icons.arrow_back_ios_new_rounded,
                   onTap: onBack,
+                  semanticLabel: 'general.back'.tr(),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Opacity(
-                    opacity: titleOpacity,
-                    child: Text(
+                  child: Builder(
+                    builder: (_) => Text(
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      // Alpha in the text colour rather than an Opacity around
+                      // it. One line of text does not need its own compositing
+                      // layer, and this one was getting a fresh one on every
+                      // scroll frame of the collapse.
+                      style: TextStyle(
+                        color: AppColors.textPrimary.withValues(
+                          alpha: titleOpacity,
+                        ),
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
                       ),
@@ -1288,7 +1740,7 @@ class _AnimatedTopBar extends StatelessWidget {
                   child: showPill
                       ? Padding(
                           key: const ValueKey('pill'),
-                          padding: const EdgeInsets.only(right: 8),
+                          padding: const EdgeInsetsDirectional.only(end: 8),
                           child: _ActionPill(
                             onTap: onPrimaryAction,
                             isLoading: isLoading,
@@ -1313,11 +1765,21 @@ class _AnimatedTopBar extends StatelessWidget {
                           ? Icons.check_rounded
                           : Icons.add_rounded,
                       iconColor: inPrivate ? AppColors.rating : Colors.white,
+                      // The icon has four states and the label follows it —
+                      // "Add to list" announced on a button that would in fact
+                      // remove it is worse than no label.
+                      // One label, because the tap now opens the lists
+                      // rather than committing to one of them. It used to
+                      // announce "Remove from My List" on a button that, after
+                      // the sheet, might do nothing of the sort.
+                      semanticLabel: inPrivate
+                          ? 'detail.in_private_list'.tr()
+                          : 'detail.save_action'.tr(),
                       onTap: isListActionLoading
                           ? null
                           : inPrivate
                           ? onPrivateActions
-                          : onAddToList,
+                          : onSave,
                       onLongPress: isListActionLoading || inPrivate
                           ? null
                           : onMoveToPrivate,
@@ -1329,6 +1791,7 @@ class _AnimatedTopBar extends StatelessWidget {
                   key: moreButtonKey,
                   icon: Icons.more_vert_rounded,
                   onTap: onMore,
+                  semanticLabel: 'detail.more_options'.tr(),
                 ),
               ],
             ),
@@ -1339,11 +1802,17 @@ class _AnimatedTopBar extends StatelessWidget {
   }
 }
 
+/// The header's round button, at the app's one geometry.
+///
+/// Kept as a named wrapper only because two call sites attach a GlobalKey to
+/// it — the more-menu's popup anchor and the private-list showcase target —
+/// and those keys have to ride a widget this file owns.
 class _CircleIconButton extends StatelessWidget {
   const _CircleIconButton({
     super.key,
     required this.icon,
     required this.onTap,
+    required this.semanticLabel,
     this.onLongPress,
     this.iconColor = Colors.white,
   });
@@ -1351,32 +1820,16 @@ class _CircleIconButton extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final Color iconColor;
+  final String semanticLabel;
 
   @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return HoverTap(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      onSecondaryTap: onLongPress,
-      scale: enabled ? 1.04 : 1.0,
-      child: ClipOval(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: Container(
-            width: 36,
-            height: 36,
-            color: Colors.black.withValues(alpha: 0.42),
-            child: Icon(
-              icon,
-              color: enabled ? iconColor : iconColor.withValues(alpha: 0.38),
-              size: 18,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => DetailCircleButton(
+    icon: icon,
+    onTap: onTap,
+    onLongPress: onLongPress,
+    iconColor: iconColor,
+    semanticLabel: semanticLabel,
+  );
 }
 
 class _ActionPill extends StatelessWidget {
@@ -1436,10 +1889,19 @@ class _ActionPill extends StatelessWidget {
   }
 }
 
+/// Pins the tab strip under the collapsing header.
+///
+/// The height comes from [AppTabBar]'s own constants rather than being derived
+/// here. Both detail skeletons stand in for this strip and have to match it to
+/// the pixel; when each of the three carried its own arithmetic, one of them
+/// used `kTextTabBarHeight` (48) against the real 46 + 2.5 + 0.5, and every
+/// sliver below the pinned header sat 2pt out.
 class _TabBarDelegate extends SliverPersistentHeaderDelegate {
   const _TabBarDelegate({required this.tabBar, required this.stripKey});
-  final TabBar tabBar;
+  final AppTabBar tabBar;
   final GlobalKey stripKey;
+
+  static const double _height = AppTabBar.stripHeight + AppTabBar.dividerHeight;
 
   @override
   Widget build(
@@ -1453,26 +1915,33 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
       child: Column(
         children: [
           SizedBox(
-            height: tabBar.preferredSize.height,
+            height: AppTabBar.stripHeight,
             child: Padding(
-              padding: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsetsDirectional.only(start: 8),
               child: tabBar,
             ),
           ),
-          Container(height: 0.5, color: AppColors.divider),
+          Container(height: AppTabBar.dividerHeight, color: AppColors.divider),
         ],
       ),
     );
   }
 
   @override
-  double get maxExtent => tabBar.preferredSize.height + 0.5;
+  double get maxExtent => _height;
 
   @override
-  double get minExtent => tabBar.preferredSize.height + 0.5;
+  double get minExtent => _height;
 
+  /// Compared on what actually changes.
+  ///
+  /// The old version compared the TabBar instances, which are freshly
+  /// allocated on every build and have no `==` — so this always returned true
+  /// and only looked like an optimisation.
   @override
-  bool shouldRebuild(_TabBarDelegate old) => tabBar != old.tabBar;
+  bool shouldRebuild(_TabBarDelegate old) =>
+      !identical(tabBar.controller, old.tabBar.controller) ||
+      tabBar.labels.length != old.tabBar.labels.length;
 }
 
 class _BackOnlyBar extends StatelessWidget {
@@ -1485,21 +1954,13 @@ class _BackOnlyBar extends StatelessWidget {
     return Positioned(
       top: topPad + 8,
       left: 8,
-      child: HoverTap(
+      // The same button the loaded page shows. This is the one control on
+      // screen across the whole load, so any difference between the two is a
+      // jump in the thing the eye is already resting on.
+      child: DetailCircleButton(
+        icon: Icons.arrow_back_ios_new_rounded,
         onTap: onBack,
-        child: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.black.withValues(alpha: 0.45),
-          ),
-          child: const Icon(
-            Icons.arrow_back_ios_new_rounded,
-            color: Colors.white,
-            size: 17,
-          ),
-        ),
+        semanticLabel: 'general.back'.tr(),
       ),
     );
   }
@@ -1549,7 +2010,13 @@ class _ErrorView extends StatelessWidget {
     required this.onRetry,
     required this.onBack,
     this.onSolveCloudflare,
+    this.provider,
+    this.content,
   });
+
+  /// For a support request about this title, if the viewer writes one.
+  final String? provider;
+  final String? content;
 
   final String message;
   final VoidCallback onRetry;
@@ -1564,9 +2031,9 @@ class _ErrorView extends StatelessWidget {
       child: Column(
         children: [
           Align(
-            alignment: Alignment.centerLeft,
+            alignment: AlignmentDirectional.centerStart,
             child: Padding(
-              padding: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsetsDirectional.only(start: 8),
               child: _ErrorBackButton(onBack: onBack),
             ),
           ),
@@ -1606,6 +2073,14 @@ class _ErrorView extends StatelessWidget {
               label: Text('cloudflare.solve'.tr()),
             ),
           ],
+          const SizedBox(height: 8),
+          SupportSuggestion(
+            screen: 'detail',
+            category: SupportCategory.content,
+            provider: provider,
+            content: content,
+            error: message,
+          ),
           const Spacer(),
         ],
       ),

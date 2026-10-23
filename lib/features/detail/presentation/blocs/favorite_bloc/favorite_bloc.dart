@@ -29,7 +29,8 @@ class FavoriteBloc extends Bloc<FavoriteEvent, FavoriteState> {
 
   Future<void> _onLoad(FavoriteLoad event, Emitter<FavoriteState> emit) async {
     final inPrivate = getIt<PrivateListService>().contains(event.contentUrl);
-    final isIn = _local.isFavorite(event.provider, event.contentUrl) ||
+    final isIn =
+        _local.isFavorite(event.provider, event.contentUrl) ||
         (event.isFavorited ?? false);
     emit(FavoriteReady(isInList: isIn || inPrivate, inPrivate: inPrivate));
   }
@@ -40,6 +41,11 @@ class FavoriteBloc extends Bloc<FavoriteEvent, FavoriteState> {
   ) async {
     final current = state;
     if (current is! FavoriteReady || current.isLoading) return;
+    // A title in the private list reads as "in the list" (see _onLoad), and
+    // toggling it used to call removeFavorite — which removes from My List,
+    // where it is not — then report it as in no list at all while it sat in
+    // the private one. The private list has its own actions, behind the PIN.
+    if (current.inPrivate) return;
 
     final nextIsInList = !current.isInList;
     emit(current.copyWith(isInList: nextIsInList, isLoading: true));
@@ -48,7 +54,7 @@ class FavoriteBloc extends Bloc<FavoriteEvent, FavoriteState> {
       final result = await _removeFavorite(event.contentUrl);
       switch (result) {
         case Success():
-          emit(FavoriteReady(isInList: nextIsInList));
+          emit(current.copyWith(isInList: nextIsInList, isLoading: false));
         case Failure():
           emit(current.copyWith(isLoading: false));
       }
@@ -63,7 +69,7 @@ class FavoriteBloc extends Bloc<FavoriteEvent, FavoriteState> {
       );
       switch (result) {
         case Success():
-          emit(FavoriteReady(isInList: nextIsInList));
+          emit(current.copyWith(isInList: nextIsInList, isLoading: false));
         case Failure():
           emit(current.copyWith(isLoading: false));
       }

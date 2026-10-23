@@ -1,25 +1,68 @@
+import 'package:soplay/features/search/data/source_health_store.dart';
+import 'package:soplay/features/download/presentation/widgets/download_choice_sheet.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:soplay/core/player/hls_variants.dart';
+import 'package:soplay/core/player/quality_preference.dart';
+import 'package:soplay/core/player/stream_cloudflare.dart';
+import 'package:soplay/core/player/url_signer.dart';
+import 'package:soplay/features/support/data/support_models.dart';
+import 'package:soplay/core/analytics/analytics.dart';
+import 'package:soplay/core/player/color_profile.dart';
+import 'package:soplay/core/player/shader_presets.dart';
+import 'package:soplay/core/player/shader_store.dart';
+import 'package:soplay/features/detail/data/title_prefs_store.dart';
+import 'package:soplay/features/stats/data/watch_stats_store.dart';
+import 'package:soplay/core/network/external_dio.dart';
+import 'package:soplay/core/network/cf_bypass_service.dart';
+import 'package:soplay/core/network/fetch_metadata.dart';
 import 'package:soplay/core/network/user_agent.dart';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:file_picker/file_picker.dart';
+
 import 'package:dio/dio.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:floating/floating.dart';
+import 'package:gal/gal.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:dart_cast/dart_cast.dart';
 import 'package:soplay/core/cast/cast_controller.dart';
+import 'package:soplay/core/cast/cast_handoff.dart';
+import 'package:soplay/core/subtitles/subtitle_auto_translate.dart';
 import 'package:soplay/core/di/injection.dart';
+import 'package:soplay/core/discord/discord_activity.dart';
+import 'package:soplay/core/discord/discord_presence_service.dart';
 import 'package:soplay/core/diagnostics/log_viewer_sheet.dart';
 import 'package:soplay/core/diagnostics/player_log.dart';
 import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/player/external_player.dart';
 import 'package:soplay/core/player/local_hls_proxy.dart';
+import 'package:soplay/core/extractor/provider_manager.dart';
 import 'package:soplay/core/player/player_engine.dart';
+import 'package:soplay/core/player/player_video_track.dart';
+import 'package:soplay/core/player/source_ladder.dart';
+import 'package:soplay/features/detail/domain/download_choices.dart';
+import 'package:soplay/features/detail/domain/player_affordances.dart';
+import 'package:soplay/features/detail/domain/playback/episode_window.dart';
+import 'package:soplay/features/detail/domain/playback/playback_fault.dart';
+import 'package:soplay/features/detail/domain/playback/retry_policy.dart';
+import 'package:soplay/features/detail/domain/playback/skip_offers.dart';
+import 'package:soplay/features/detail/domain/playback/wakelock_holds.dart';
+import 'package:soplay/features/detail/domain/playback/watch_progress.dart';
+import 'package:soplay/features/detail/domain/player_controls_layout.dart';
+import 'package:soplay/features/detail/domain/playback/party_rules.dart';
+import 'package:soplay/features/detail/domain/playback/player_info_fields.dart';
+import 'package:soplay/features/detail/domain/playback/playback_readout.dart';
+import 'package:soplay/core/player/stream_warnings.dart';
 import 'package:soplay/core/player/webview_stream_extractor.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/widgets/server_badge.dart';
 import 'package:soplay/core/system/app_orientation.dart';
 import 'package:soplay/core/system/desktop_window.dart';
 import 'package:soplay/core/system/responsive.dart';
@@ -27,7 +70,10 @@ import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/anilist/data/anilist_tracker.dart';
 import 'package:soplay/features/mal/data/mal_tracker.dart';
 import 'package:soplay/features/cloudflare/cloudflare_solver.dart';
+import 'package:soplay/features/cloudflare/cloudflare_solver_page.dart';
 import 'package:soplay/features/detail/domain/entities/episode_entity.dart';
+import 'package:soplay/features/detail/domain/entities/media_resolve_entity.dart';
+import 'package:soplay/features/detail/domain/usecases/get_episodes_usecase.dart';
 import 'package:soplay/features/detail/domain/entities/extractor_config_entity.dart';
 import 'package:soplay/features/detail/domain/entities/player_args.dart';
 import 'package:soplay/core/subtitles/online_subtitles_service.dart';
@@ -37,16 +83,24 @@ import 'package:soplay/features/detail/domain/entities/subtitle_entity.dart';
 import 'package:soplay/features/detail/domain/entities/subtitle_style.dart';
 import 'package:soplay/features/detail/domain/entities/thumbnails_entity.dart';
 import 'package:soplay/core/preview/frame_preview_service.dart';
+import 'package:soplay/features/detail/domain/scrub_curve.dart';
+import 'package:soplay/features/trakt/data/trakt_tracker.dart';
 import 'package:soplay/features/detail/domain/entities/video_source_entity.dart';
 import 'package:soplay/features/detail/domain/video_option_groups.dart';
-import 'package:soplay/features/detail/presentation/widgets/player_engine_sheet.dart';
 import 'package:soplay/features/detail/domain/usecases/resolve_media_usecase.dart';
 import 'package:soplay/features/detail/data/aniskip_service.dart';
+import 'package:soplay/features/detail/presentation/pages/player_controls_page.dart';
+import 'package:soplay/features/detail/presentation/widgets/subtitle_size_control.dart';
+import 'package:soplay/features/detail/presentation/widgets/player_transport_row.dart';
 import 'package:soplay/features/detail/presentation/widgets/alternate_source_sheet.dart';
+import 'package:soplay/features/detail/presentation/widgets/player_info_fields_sheet.dart';
 import 'package:soplay/features/streak/data/streak_service.dart';
 import 'package:soplay/features/streak/presentation/dialogs/streak_milestone_dialog.dart';
-import 'package:soplay/features/download/data/download_service.dart';
-import 'package:soplay/features/download/domain/entities/download_item.dart';
+import 'package:soplay/features/download/domain/entities/download_request.dart';
+import 'package:soplay/features/download/data/subtitle_sidecar.dart';
+import 'package:soplay/features/download/domain/usecases/enqueue_download_usecase.dart';
+import 'package:soplay/features/download/domain/usecases/get_downloads_usecase.dart';
+import 'package:soplay/features/download/presentation/download_messages.dart';
 import 'package:soplay/features/history/data/history_service.dart';
 import 'package:soplay/features/history/domain/entities/history_item.dart';
 import 'package:soplay/features/watch_party/data/watch_party_service.dart';
@@ -59,13 +113,18 @@ import 'package:soplay/features/watch_party/presentation/party_entry.dart';
 import 'package:soplay/features/watch_party/presentation/widgets/party_reactions_bar.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:soplay/core/player/media_controller.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:soplay/core/player/dash_manifest.dart';
 import 'package:soplay/features/history/data/history_sync_service.dart';
 import 'package:soplay/features/live_tv/presentation/widgets/live_guide_sheet.dart';
 import 'package:soplay/core/torrent/torrent_engine.dart';
 import 'package:soplay/core/torrent/torrent_stream_url.dart';
 import 'package:soplay/features/torrent/presentation/torrent_playback.dart';
 import 'package:soplay/features/torrent/presentation/widgets/torrent_stats_overlay.dart';
+import 'package:window_manager/window_manager.dart' show DragToMoveArea;
+import 'package:soplay/features/jellyfin/data/jellyfin_reporter.dart';
+import 'package:soplay/features/automation/data/auto_download_service.dart';
+import 'package:soplay/features/automation/data/automation_settings.dart';
+import 'package:soplay/features/automation/domain/prefetch_slot.dart';
 
 part 'player_page.models.dart';
 part 'player_page.widgets.dart';
@@ -81,9 +140,11 @@ part 'player_page.cast.dart';
 part 'player_page.aniskip.dart';
 part 'player_page.party.dart';
 part 'player_page.tv.dart';
+part 'player_page.jellyfin.dart';
+part 'player_page.upnext.dart';
 
 /// Hard ceiling on auto-retries per episode — see [_PlayerPageState._lifetimeRetries].
-const int _kMaxLifetimeRetries = 4;
+const int _kMaxLifetimeRetries = RetryPolicy.maxLifetimeRetries;
 
 /// Reconnect budget for a live broadcast, which is a different problem.
 ///
@@ -92,16 +153,13 @@ const int _kMaxLifetimeRetries = 4;
 /// network — and the only correct response is to reconnect and keep watching.
 /// Four in a two-hour evening meant the player gave up permanently on something
 /// that was working again seconds later.
-const int _kMaxLiveRetries = 1000;
+const int _kMaxLiveRetries = RetryPolicy.maxLiveRetries;
 
 /// How long to wait before reconnecting a dropped channel, by attempt.
 ///
 /// Fast enough that a blip is invisible, and backing off so a channel that is
 /// genuinely off air is not hammered all evening.
-Duration _liveRetryBackoff(int attempt) {
-  const steps = [1, 2, 4, 8, 15];
-  return Duration(seconds: steps[attempt < steps.length ? attempt : steps.length - 1]);
-}
+Duration _liveRetryBackoff(int attempt) => RetryPolicy.liveBackoff(attempt);
 
 class PlayerPage extends StatefulWidget {
   const PlayerPage({super.key, required this.args});
@@ -113,10 +171,11 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+  int _mediaGeneration = 0;
+
   final ResolveMediaUseCase _resolve = getIt<ResolveMediaUseCase>();
   final HiveService _hive = getIt<HiveService>();
   final HistoryService _history = getIt<HistoryService>();
-  final DownloadService _downloads = getIt<DownloadService>();
   final Floating _floating = Floating();
 
   // Playback preferences, snapshotted in initState. Settings → Player is not
@@ -133,9 +192,12 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// AniSkip: opening/ending intervals for the CURRENT episode, the offer
   /// currently on screen, and which types have already been used or declined.
-  List<SkipInterval> _skipIntervals = const [];
+  /// Which skip offer belongs on screen, and which have been used.
+  ///
+  /// Was `_skipIntervals` plus a `_skipsTaken` set, with the ten-second offer
+  /// window as a private constant on an extension. See [SkipOffers].
+  final SkipOffers _skips = SkipOffers();
   SkipInterval? _activeSkip;
-  final Set<String> _skipsTaken = <String>{};
 
   /// Sleep timer: the moment playback should stop, or null when unarmed.
   /// [_sleepAtEpisodeEnd] is the other arming mode — see player_page.sleep.dart.
@@ -143,15 +205,54 @@ class _PlayerPageState extends State<PlayerPage>
   DateTime? _sleepDeadline;
   bool _sleepAtEpisodeEnd = false;
 
+  /// The next episode's prefetch key when it turned out to be downloaded, so
+  /// the per-tick check does not stat the file again. See _maybePrefetchNext.
+  String? _prefetchLocalKey;
+
+  final PrefetchSlot<MediaResolveEntity> _nextResolve =
+      PrefetchSlot<MediaResolveEntity>();
+
+  /// "Cancel" on the Up next prompt: this episode ends without advancing.
+  bool _upNextDismissed = false;
+
   bool _isPip = false;
+
+  /// Desktop picture-in-picture: the window is the small always-on-top
+  /// player. [_isPip] is set with it, which hides the full controls.
+  bool _desktopMini = false;
+  final ValueNotifier<bool> _miniHover = ValueNotifier<bool>(false);
   bool _resumeAfterPause = false;
   bool _lastPipPlaying = false;
 
   PlayerController? _controller;
-  late int _episodeIndex;
+  bool _preferPlatformPlayer = false;
   String? _currentQuality;
   String? _videoUrl;
+
+  /// The url as it was handed to `_initializeWith`, before the WebView sniff
+  /// and before the local proxy rewrote it.
+  ///
+  /// `_videoUrl` is what the PLAYER was finally given — post-sniff,
+  /// post-proxy — and every recovery path fed that back in. For a movie behind
+  /// an extractor directive that means re-running the sniff on a url the sniff
+  /// itself produced: the page it was told to scrape is a video file, nothing
+  /// matches, and the retry fails for a reason that has nothing to do with why
+  /// the first attempt did. This is the url that can usefully be re-run.
+  String? _playSourceUrl;
+
+  /// The headers that went in with [_playSourceUrl]. `_headers` is the merged
+  /// post-sniff set, and feeding those back into a re-sniff sends the CDN's own
+  /// headers to the embed page.
+  Map<String, String> _playSourceHeaders = const {};
   String? _mediaType;
+
+  /// What the resolve said about the media as a whole — the format hint for
+  /// any source that does not state its own. See `_typeOf`.
+  String? _resolvedType;
+
+  /// What the resolve said about liveness: a provider's live-TV channel is
+  /// marked there, since its playlist can report a finite DVR window.
+  bool _resolvedLive = false;
 
   /// Torrent playback, when the source turned out to be a magnet rather than a
   /// stream. The engine is lazy — constructing it costs nothing and it never
@@ -163,8 +264,51 @@ class _PlayerPageState extends State<PlayerPage>
   /// strangers after the viewer thinks they are done watching.
   String? _torrentHash;
   Map<String, String> _headers = const {};
-  bool _isNetworkVideo = false;
+
+  /// The headers the resolve itself came with, before any per-stream merge.
+  /// What a mirror without headers of its own falls back to: [_headers] is
+  /// the previous stream's merged set, and its Referer and Cloudflare cookie
+  /// belong to that stream's host.
+  Map<String, String> _resolveHeaders = const {};
   bool _isHls = false;
+
+  /// A DASH manifest: neither frame decoder here reads one.
+  bool _isDash = false;
+
+  /// Fires [_schedulePreviewWarm]'s delayed start; cancelled on every change of media.
+  Timer? _previewWarm;
+
+  /// Last playing state sent to Trakt, so only changes are scrobbled.
+  bool _traktPlaying = false;
+
+  /// A remembered choice about the stream's own subtitle tracks, waiting for
+  /// the tracks to be listed: a label to pick, or
+  /// [TitlePrefsStore.subtitleOff]. Null once applied.
+  String? _pendingEmbeddedChoice;
+
+  /// Whether this episode's remembered height has been matched against the
+  /// engine's renditions yet.
+  /// The controller the remembered rendition was last applied to.
+  PlayerController? _videoTrackAppliedFor;
+
+  /// Where the stream about to open will seek to, until that seek lands. A
+  /// quality or server picked during the first load read the controller's
+  /// position — still zero — and restarted a resumed film from the top.
+  Duration _pendingResume = Duration.zero;
+
+  /// Whether the reload under way should play when it opens: what the viewer
+  /// had before a quality or server switch. Null for an ordinary start, which
+  /// follows the "start paused" setting.
+  bool? _autoplayOverride;
+
+  /// The audio track to pick again once a reloaded stream lists its tracks:
+  /// (language, title) of the one playing before the switch.
+  (String?, String?)? _pendingAudioChoice;
+
+  /// The height picked by hand this session, 0 for Auto. Outranks what is
+  /// stored, so a title with no content url still keeps the pick.
+  int? _manualHeight;
+
   /// True while the current media is a live broadcast.
   ///
   /// Seeded from what the caller SAID it is rather than guessed alone: Live TV
@@ -189,11 +333,115 @@ class _PlayerPageState extends State<PlayerPage>
   /// change.
   ExtractorConfigEntity? _extractorConfig;
   int _currentSourceIndex = -1;
-  bool _autoFallbackUsed = false;
+
+  /// Master playlists already read for their renditions, so switching back to a
+  /// server does not refetch its manifest.
+  final Set<String> _expandedMasters = <String>{};
+
+  /// Renditions parsed out of a master. Already streams, so a switch to one
+  /// must not go back through the page sniff its master needed.
+  final Set<String> _variantUrls = <String>{};
+
+  /// Mirrors already attempted for what is on screen, by url.
+  ///
+  /// This was a single `_autoFallbackUsed` bool, which is why a five-mirror
+  /// title gave up after the second: one fallback, latched. Urls rather than
+  /// indices because `_loadEpisode` REBUILDS the candidate list on every
+  /// re-resolve, and the retry path re-resolves — an index does not survive
+  /// that, so the walk used to restart at the top and loop.
+  final Set<String> _triedSourceUrls = <String>{};
+
+  /// Set when a mirror failed to DECODE, so sibling mirrors in the same codec
+  /// sink to the back of the ladder. Cleared wherever the ladder resets.
+  String? _decoderAvoidCodec;
+
+  /// Pinch zoom over the video, 1.0 = untouched.
+  ///
+  /// Separate from [_PlayerFit], which snaps to three presets. Fit answers
+  /// "how should this frame sit in this window"; zoom answers "I want to crop
+  /// these bars away by exactly this much", which no preset can. Session-only
+  /// and reset on every new episode — a crop tuned for a 2.39:1 film is wrong
+  /// for the 16:9 episode after it.
+  double _videoZoom = 1.0;
+
+  /// The zoom the current pinch started from, so a gesture scales relative to
+  /// where it began rather than snapping back to 1.0 on every touch.
+  double _zoomAtPinchStart = 1.0;
+
+  /// Whether the live readout is on screen. Session-only on purpose: it is a
+  /// diagnostic, and nobody wants to find it still there next week.
+  bool _showPlayerInfo = false;
+
+  /// Whether the automatic translation attempt has been made for the episode
+  /// on screen. Per episode, not per session — reset in _resetForEpisode.
+  bool _autoTranslateDone = false;
+
+  /// Which rows the info overlay may show. Read once at open and updated when
+  /// the picker changes it, rather than re-read on every frame — the overlay
+  /// rebuilds on every position tick and a Hive read there is pure waste.
+  Set<String> _infoFields = PlayerInfoFields.fromStored(
+    getIt<HiveService>().getPlayerInfoFields(),
+  );
+
+  /// The viewer's bar arrangement. Read once at open: it can only change from
+  /// the editor, and returning from that re-reads it.
+  PlayerControlsLayout _layout = PlayerControlsLayout.fromStored(
+    getIt<HiveService>().getPlayerControlsLayout(),
+  );
+
   String? _errorMessage;
+
+  /// The failure as the engine reported it, before translation.
+  ///
+  /// [_errorMessage] is what the viewer reads — a `PlaybackFaultKind` sentence
+  /// or a humanised line — and by then the words the classifiers key on are
+  /// gone. `isCloudflareError(_errorMessage)` therefore never matched anything
+  /// and the "Solve Cloudflare" button on the error screen was unreachable
+  /// code: the one screen where a challenge is visible to the viewer was the
+  /// one screen that could not offer to solve it.
+  String? _errorRaw;
   bool _isCodecError = false;
   bool _initializing = true;
   _LoadingStage _stage = _LoadingStage.loading;
+
+  /// Set for the duration of a deliberate server change, so the loading
+  /// overlay can name the mirror being switched to instead of showing the
+  /// same spinner somebody was trying to escape. Cleared once the new stream
+  /// is playing (or has failed).
+  ServerSwitch? _serverSwitch;
+
+  /// Which episodes are loaded and which one is playing.
+  ///
+  /// THE SEAM. These were three loose fields — `_episodes`, `_windowStart`,
+  /// `_episodeIndex` — with the rule connecting them written in a comment and
+  /// enforced by nothing. The rule is in [EpisodeWindow] now, where it is
+  /// testable without a widget tree, and the sixteen tests that came with it
+  /// pin the case this player got wrong for a year: Next greyed out at episode
+  /// 100 of 1176, because the test asked whether the next episode was LOADED
+  /// rather than whether it EXISTS.
+  ///
+  /// Everything below is a forwarding getter, so the hundred-odd readers
+  /// spread across fifteen part files did not have to change. They can move to
+  /// `_window` one at a time, or never — what matters is that there is one
+  /// place left that can answer these questions wrongly.
+  late EpisodeWindow _window = EpisodeWindow(
+    episodes: List.of(widget.args.episodes),
+    windowStart: widget.args.windowStart,
+    index: 0,
+    total: widget.args.effectiveTotal,
+    isSerial: widget.args.isSerial,
+  );
+
+  List<EpisodeEntity> get _episodes => _window.episodes;
+  int get _windowStart => _window.windowStart;
+  int get _episodeIndex => _window.index;
+  // Kept even though nothing reads it today: it is the question the greyed-out
+  // Next button got wrong, and the next reader looking for "which episode of
+  // how many" should find it here rather than adding the sum back by hand.
+  // ignore: unused_element
+  int get _absoluteIndex => _window.absoluteIndex;
+  bool get _hasNextEpisode => _window.hasNext;
+  bool get _hasPrevEpisode => _window.hasPrev;
   bool _controlsVisible = true;
   bool _locked = false;
   _SidePanel _panel = _SidePanel.none;
@@ -214,6 +462,15 @@ class _PlayerPageState extends State<PlayerPage>
   /// Cues for the active track, already sorted by start time — see
   /// [_PlayerSubtitles._loadSubtitle]. Null means "no track loaded".
   List<Caption>? _captionFile;
+
+  /// A second subtitle track, shown above the first.
+  ///
+  /// For watching in a language you are learning: the original underneath, your
+  /// own language above it, both timed to the same frame. Sharing one track
+  /// cannot do this — the two are separate files with separate timings, and
+  /// switching between them loses the line you were reading.
+  List<Caption>? _secondaryCaptionFile;
+  int _secondarySubtitleIndex = -1;
   // AI-translated tracks build their cues progressively and hold them here,
   // keyed by the entity's 'ai:<n>' marker, so re-selecting one restores the
   // cues instead of trying to download an empty url.
@@ -230,18 +487,77 @@ class _PlayerPageState extends State<PlayerPage>
   String? _thumbnailsKey;
   List<_VttThumbnail> _vttThumbnails = const [];
   ThumbnailsEntity? _storyboard;
+
+  /// What the source's thumbnails are fetched with: the sprite sheets sit on
+  /// the same header-gated hosts as the VTT that lists them.
+  Map<String, String> _thumbnailHeaders = const {};
+
+  /// A sprite sheet would not load. The seek preview then decodes frames
+  /// itself, as it does for a source with no thumbnails at all.
+  bool _thumbnailsFailed = false;
   final ValueNotifier<double?> _sliderDragValue = ValueNotifier<double?>(null);
 
   /// Seeded from Settings → Player in [initState]; still freely changed
   /// mid-playback from the speed sheet, which does not write the default back.
+  final TitlePrefsStore _titlePrefs = TitlePrefsStore();
+  final WatchStatsStore _watchStats = WatchStatsStore();
+
+  /// Seconds already added to the totals, so a tick banks only the new stretch.
+  /// Banking, the 85% mark and the once-per-episode tracker ledger.
+  ///
+  /// These were `_bankedSeconds`, `_trackersReported` and a threshold constant,
+  /// each with a comment explaining a rule that nothing enforced. See
+  /// [WatchProgress].
+  final WatchProgress _progress = WatchProgress();
+
+  /// Whether this episode has already been counted as finished. Reset when the
+  /// player moves to another episode.
+  bool _countedComplete = false;
+
+  /// Whether this episode's last two seconds have already been handled.
+  ///
+  /// The listener that notices the end fires on every position tick, so
+  /// without this the end-of-episode bookkeeping ran a dozen times in a row.
+  /// Reset alongside [_countedComplete].
+  bool _endHandled = false;
+
+  /// This episode was reached by auto-advance rather than by being opened.
+  ///
+  /// Read only by the "start paused" preference, which is about the app
+  /// starting a stream on its own when a page is opened — not about refusing
+  /// to continue a run somebody is already watching. Never reset: once a
+  /// session has advanced, everything after it in that session is a
+  /// continuation.
+  bool _autoAdvanced = false;
+
   double _playbackSpeed = 1.0;
+
+  /// The picture profile in force. Read from settings at open and changeable
+  /// from the player, because the reason to change it — the room got dark — is
+  /// something that happens mid-episode.
+  ColorProfile _colorProfile = ColorProfile.natural;
+
+  /// The Anime4K chain in force, and where its files live.
+  ShaderPreset _shaderPreset = ShaderPreset.off;
+  ShaderTier _shaderTier = ShaderTier.mid;
+  final ShaderStore _shaders = ShaderStore();
   _PlayerFit _fit = _PlayerFit.contain;
   bool _isPortrait = false;
+
+  /// Whether this page currently holds the screen-awake lock. See
+  /// _syncWakelock: it follows playback, not the page's lifetime.
+  bool _wakelockHeld = false;
   bool _isFullscreen = false;
   double _volumeBeforeMute = 1.0;
 
   double _brightness = 0.5;
   double _volume = 1.0;
+
+  /// Swipe levels not yet handed to the system, and the timer pacing them.
+  /// See _pushSystemLevels in player_page.pip.dart.
+  bool _brightnessDirty = false;
+  bool _volumeDirty = false;
+  Timer? _systemLevelTimer;
   final ValueNotifier<_SwipeIndicator?> _swipeIndicator =
       ValueNotifier<_SwipeIndicator?>(null);
 
@@ -250,6 +566,25 @@ class _PlayerPageState extends State<PlayerPage>
   _SwipeType? _dragSwipeType;
 
   final ValueNotifier<_ScrubState?> _scrub = ValueNotifier<_ScrubState?>(null);
+
+  /// A finger is on the seek bar. Apart from the drag value, which is held
+  /// until the seek lands to keep the thumb still: the preview card went
+  /// with that value and hung on for up to a second after the finger lifted.
+  final ValueNotifier<bool> _seekBarDragging = ValueNotifier<bool>(false);
+
+  /// Where the finger first touched the video, before any recogniser had
+  /// decided what the touch was: the swipe measures from here, not from where
+  /// it was recognised, so the first centimetre of travel is not lost.
+  Offset? _pointerDownAt;
+
+  /// The system took the touch away (a gesture from the edge, a call). The
+  /// scale recogniser reports that as an ordinary end, which committed the
+  /// swipe's seek; this turns it back into a cancel.
+  bool _pointerCancelled = false;
+
+  /// A pinch has ended with a finger still down. That finger is ignored until
+  /// it lifts, so the tail of a pinch cannot start a scrub.
+  bool _pinchLatched = false;
   final ValueNotifier<bool> _speedBoost = ValueNotifier<bool>(false);
   double? _speedBeforeBoost;
 
@@ -272,6 +607,18 @@ class _PlayerPageState extends State<PlayerPage>
   int _lifetimeRetries = 0;
 
   bool _autoRetrying = false;
+
+  /// Stream hosts already asked whether a Cloudflare challenge is what made
+  /// them refuse — once each per player, since the answer costs a request.
+  final Set<String> _cfChecked = {};
+
+  /// Hosts whose challenge was solved here. Their clearance was earned with
+  /// [kSozoUserAgent], and Cloudflare honours it only alongside that agent.
+  final Set<String> _cfSolved = {};
+
+  /// The stream behind a challenge that could not be solved headlessly — what
+  /// the error screen's "Solve Cloudflare" opens for someone to answer.
+  Uri? _cfWall;
   final Stopwatch _playbackWatch = Stopwatch();
   bool _streakPingScheduled = false;
 
@@ -280,7 +627,6 @@ class _PlayerPageState extends State<PlayerPage>
   /// The progress check runs on every position tick, and auto-play means one
   /// player instance can cover several episodes — a plain bool would report the
   /// first episode and nothing after it.
-  final Set<int> _trackersReported = <int>{};
 
   bool _wasPlaying = false;
   bool _wasBuffering = false;
@@ -316,7 +662,9 @@ class _PlayerPageState extends State<PlayerPage>
   // nearest enclosing scope. If that were the route's scope instead of this
   // node, it would no longer be in the key-event chain and the remote would go
   // dead until the next tap.
-  final FocusScopeNode _tvRootFocus = FocusScopeNode(debugLabel: 'tvPlayerRoot');
+  final FocusScopeNode _tvRootFocus = FocusScopeNode(
+    debugLabel: 'tvPlayerRoot',
+  );
 
   /// Focus scope for the TV side panel (quality / episodes).
   ///
@@ -327,8 +675,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// which is what "quality doesn't work on TV" actually was. Giving the panel
   /// its own scope lets [_openPanel] hand focus over and [_closePanel] hand it
   /// back deterministically.
-  final FocusScopeNode _tvPanelFocus =
-      FocusScopeNode(debugLabel: 'tvPlayerPanel');
+  final FocusScopeNode _tvPanelFocus = FocusScopeNode(
+    debugLabel: 'tvPlayerPanel',
+  );
   final FocusNode _tvPlayFocus = FocusNode(debugLabel: 'tvPlayerPlay');
   final FocusNode _tvSeekFocus = FocusNode(debugLabel: 'tvPlayerSeek');
 
@@ -349,18 +698,40 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void initState() {
     super.initState();
+    // Brought up alongside playback rather than at app start: on desktop it
+    // opens a socket to the Discord client, and there is no reason to hold one
+    // while somebody is browsing. Failure is silent and expected — Discord
+    // simply may not be running.
+    if (_hive.discordPresenceEnabled) {
+      unawaited(getIt<DiscordPresenceService>().start());
+    }
     _subtitleStyle = _hive.getSubtitleStyle();
     _playbackSpeed = _hive.getDefaultPlaybackSpeed();
+    _colorProfile = ColorProfile.fromId(_hive.getColorProfile());
+    _shaderPreset = ShaderPreset.fromId(_hive.getShaderPreset());
+    _shaderTier = ShaderTier.fromId(_hive.getShaderTier());
     _fit = _playerFitFromId(_hive.getDefaultPlayerFit());
     _seekSeconds = _hive.getDoubleTapSeekSeconds();
     _longPressBoost = _hive.getLongPressBoost();
     _brightnessGestureEnabled = _hive.brightnessGestureEnabled;
     _volumeGestureEnabled = _hive.volumeGestureEnabled;
-    _episodeIndex = widget.args.initialEpisodeIndex.clamp(
-      0,
-      widget.args.episodes.isEmpty ? 0 : widget.args.episodes.length - 1,
+    _window = _window.at(
+      widget.args.initialEpisodeIndex.clamp(
+        0,
+        _episodes.isEmpty ? 0 : _episodes.length - 1,
+      ),
     );
-    _currentLang = widget.args.initialLang ?? _hive.getPreferredMediaLang();
+    // Per-title first, global second. Somebody who watches one show dubbed and
+    // the next subbed had a single setting fighting them on every episode; the
+    // show they are actually opening now decides, and the global value is only
+    // the default for a title nothing is remembered about.
+    _currentLang =
+        widget.args.initialLang ??
+        _titlePrefs.langFor(
+          widget.args.provider,
+          widget.args.contentUrl ?? '',
+        ) ??
+        _hive.getPreferredMediaLang();
     _restoreSubtitleSync();
     _controlsAnimation = AnimationController(
       vsync: this,
@@ -373,6 +744,7 @@ class _PlayerPageState extends State<PlayerPage>
     );
     WidgetsBinding.instance.addObserver(this);
     _pipChannel.setMethodCallHandler(_onPipMethodCall);
+    if (isIosPlatform) _iosPipChannel.setMethodCallHandler(_onIosPipCall);
     unawaited(_loadSystemControlValues());
     PlayerLog.instance
       ..clear()
@@ -407,6 +779,12 @@ class _PlayerPageState extends State<PlayerPage>
           _resumeAfterPause = true;
           c.pause();
         }
+        // Backgrounded is the last callback Android reliably delivers before
+        // it is free to kill the process, and `dispose` is not delivered at
+        // all when it does. Keeping playing in PiP or on the desktop does not
+        // reach the pause above either, so the flush is unconditional: at
+        // worst it rewrites a row the tick just wrote.
+        _saveHistory();
         break;
       case AppLifecycleState.resumed:
         if (_isPip && mounted) {
@@ -418,6 +796,8 @@ class _PlayerPageState extends State<PlayerPage>
         _resumeAfterPause = false;
         break;
       case AppLifecycleState.detached:
+        // The engine is going away and dispose may never run. Last chance.
+        _saveHistory();
         break;
     }
   }
@@ -427,6 +807,26 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _previewWarm?.cancel();
+    // Leaving the player from the mini window must not leave the app a
+    // thumbnail above everything else.
+    if (_desktopMini) unawaited(DesktopWindow.exitMini());
+    _miniHover.dispose();
+    // Leaving mid-play is a pause as far as Trakt's "watching now" goes.
+    if (_traktPlaying) _syncTraktScrobble(false);
+    _mediaGeneration++;
+    // Discord first, and unconditionally.
+    //
+    // Leaving a profile saying somebody is watching a film they closed an hour
+    // ago is the one failure of this feature that other people can see, so it
+    // is cleared before anything below is allowed to throw. Cheap when
+    // presence was never switched on: the service is inert until started.
+    if (_hive.discordPresenceEnabled) {
+      final discord = getIt<DiscordPresenceService>();
+      discord.update(null);
+      unawaited(discord.stop());
+    }
+
     // A television left playing an episode the app has forgotten has no screen
     // left that can stop it, so the session goes before anything else can throw
     // and skip this.
@@ -441,7 +841,9 @@ class _PlayerPageState extends State<PlayerPage>
     } else {
       _torrentEngine.dispose();
     }
+    _jellyfinStop();
     _saveHistory();
+    _schedulePruneAfterPlayback();
     // Push the position the viewer just stopped at, so another device can pick
     // it up. Without this the progress only leaves the phone the next time the
     // History screen happens to be opened.
@@ -449,10 +851,16 @@ class _PlayerPageState extends State<PlayerPage>
     _partyDispose();
     WidgetsBinding.instance.removeObserver(this);
     _pipChannel.setMethodCallHandler(null);
+    if (isIosPlatform) {
+      _iosPipChannel.setMethodCallHandler(null);
+      // Leaving the player while the floating window is up: it goes too.
+      if (_isPip) unawaited(_iosPipChannel.invokeMethod('stop'));
+    }
     _sleepTicker?.cancel();
     _hideTimer?.cancel();
     _historyTimer?.cancel();
     _seekRippleTimer?.cancel();
+    _systemLevelTimer?.cancel();
     _tvSeekCommit?.cancel();
     _tvRootFocus.dispose();
     _tvPanelFocus.dispose();
@@ -462,6 +870,7 @@ class _PlayerPageState extends State<PlayerPage>
     _controlsAnimation.dispose();
     _seekRippleController.dispose();
     _scrub.dispose();
+    _seekBarDragging.dispose();
     _speedBoost.dispose();
     _swipeIndicator.dispose();
     _sliderDragValue.dispose();
@@ -501,61 +910,126 @@ class _PlayerPageState extends State<PlayerPage>
         value: SystemUiOverlayStyle.light,
         child: _wrapPlayerShortcuts(
           Scaffold(
-          backgroundColor: Colors.black,
-          body: LayoutBuilder(
-            builder: (context, constraints) => _wrapHover(GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _locked ? null : _toggleControls,
-              onDoubleTapDown: _locked || isDesktopPlatform
-                  ? null
-                  : (d) => _onDoubleTapDown(d, constraints),
-              onDoubleTap: _locked
-                  ? null
-                  : isDesktopPlatform
+            backgroundColor: Colors.black,
+            body: LayoutBuilder(
+              builder: (context, constraints) => _wrapHover(
+                GestureDetector(
+                  // ANCESTOR of the whole Stack, deliberately, and it has to stay
+                  // that way.
+                  //
+                  // It was briefly moved to a Positioned.fill sibling below the
+                  // controls, to stop its long-press recogniser competing with the
+                  // seek bar's drag. That broke two things and fixed nothing worth
+                  // the trade. Measured, not guessed:
+                  //
+                  //  * The controls scrim is a full-screen DecoratedBox, and a
+                  //    RenderDecoratedBox DOES take the hit — a hit-test at the
+                  //    centre of the screen stops there and never reaches a sibling
+                  //    below it. So every gesture died the moment the controls
+                  //    became visible, which is exactly how it was reported.
+                  //  * The error card, the missing-plugin view and the loading
+                  //    overlay all live in the Stack's first child, so an opaque
+                  //    sibling above them swallowed Try again, Alternate sources
+                  //    and View logs.
+                  //  * And the conflict it was meant to fix does not cancel the
+                  //    drag at all: holding the thumb past the long-press timeout
+                  //    still delivers onChangeEnd. It only fires a spurious 2x
+                  //    speed boost, which _absorbAncestorGestures now stops at the
+                  //    seek bar itself.
+                  //
+                  // As an ancestor these recognisers are in the hit-test path for
+                  // every touch, whatever is drawn on top.
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _locked
+                      ? null
+                      : _desktopMini
+                      ? _togglePlay
+                      : _toggleControls,
+                  onDoubleTapDown: _locked || isDesktopPlatform
+                      ? null
+                      : (d) => _onDoubleTapDown(d, constraints),
+                  onDoubleTap: _locked
+                      ? null
+                      : _desktopMini
+                      ? _toggleDesktopMini
+                      : isDesktopPlatform
                       ? _toggleFullscreen
                       : () {},
-              onPanStart: _locked ? null : (d) => _onPanStart(d, constraints),
-              onPanUpdate: _locked ? null : (d) => _onPanUpdate(d, constraints),
-              onPanEnd: _locked ? null : _onPanEnd,
-              onPanCancel: _locked ? null : _onPanCancel,
-              onLongPressStart: _locked ? null : _onLongPressStart,
-              onLongPressEnd: _locked ? null : _onLongPressEnd,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _buildVideoLayer(),
-                  _buildSubtitleOverlay(),
-                  if (!_locked) _buildSeekRipple(),
-                  if (_locked) _buildLockOverlay() else _buildControlsOverlay(),
-                  if (!_locked) _buildScrubOverlay(),
-                  if (!_locked) _buildSpeedBoostBadge(),
-                  if (!_locked) _buildSwipeIndicator(),
-                  // Renders nothing unless the URL is a local torrent stream,
-                  // so it is safe to hand it every playback unconditionally.
-                  // It keeps showing while the controls are hidden if the
-                  // pre-buffer is still filling — that is precisely when the
-                  // picture is frozen and the user needs to know why.
-                  TorrentStatsOverlay(
-                    videoUrl: _videoUrl,
-                    visible: _controlsVisible && !_locked,
+                  // Scale, not pan: Flutter asserts if both are registered, since
+                  // scale is a superset. One finger is routed straight back into
+                  // the old pan handlers — see _onScaleUpdate — so brightness,
+                  // volume and swipe-seek behave exactly as before, and two
+                  // fingers pinch-zoom the picture.
+                  // In the mini window a drag moves the window instead.
+                  onScaleStart: _locked || _desktopMini
+                      ? null
+                      : (d) => _onScaleStart(d, constraints),
+                  onScaleUpdate: _locked || _desktopMini
+                      ? null
+                      : (d) => _onScaleUpdate(d, constraints),
+                  onScaleEnd: _locked || _desktopMini ? null : _onScaleEnd,
+                  onLongPressStart: _locked || _desktopMini
+                      ? null
+                      : _onLongPressStart,
+                  onLongPressEnd: _locked || _desktopMini
+                      ? null
+                      : _onLongPressEnd,
+                  child: Listener(
+                    // Seen before any recogniser claims the touch, and in the
+                    // order they happen: where the finger went down (the
+                    // swipe measures from there) and a cancel from the system,
+                    // which the scale recogniser would report as an end.
+                    onPointerDown: (e) {
+                      _pointerDownAt = e.localPosition;
+                      _pointerCancelled = false;
+                    },
+                    onPointerCancel: (_) => _pointerCancelled = true,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _buildVideoLayer(),
+                        _buildSubtitleOverlay(),
+                        if (!_locked) _buildSeekRipple(),
+                        if (_locked)
+                          _buildLockOverlay()
+                        else
+                          _buildControlsOverlay(),
+                        if (!_locked) _buildScrubOverlay(),
+                        if (!_locked) _buildSpeedBoostBadge(),
+                        if (!_locked) _buildSwipeIndicator(),
+                        // Renders nothing unless the URL is a local torrent stream,
+                        // so it is safe to hand it every playback unconditionally.
+                        // It keeps showing while the controls are hidden if the
+                        // pre-buffer is still filling — that is precisely when the
+                        // picture is frozen and the user needs to know why.
+                        TorrentStatsOverlay(
+                          videoUrl: _videoUrl,
+                          visible: _controlsVisible && !_locked,
+                        ),
+                        // Above the controls layer so it is reachable while they are
+                        // hidden — the offer is at its most useful to a viewer who has
+                        // not touched the screen. Renders nothing when no interval is
+                        // active, so it costs nothing on non-anime playback.
+                        if (!_locked) _buildPlayerInfoOverlay(),
+                        if (!_locked) _buildSkipButton(),
+                        if (!_locked) _buildUpNextPrompt(),
+                        if (!_locked && _panel != _SidePanel.none)
+                          _buildSidePanel(),
+                        if (!_locked && _inParty) _buildPartyReactionsLayer(),
+                        if (_desktopMini) _buildDesktopMiniOverlay(),
+                        // Last, so it covers everything: while a television is
+                        // playing this episode the phone is a remote, and leaving the
+                        // local controls reachable underneath would let someone
+                        // scrub a surface nobody is watching.
+                        _buildCastOverlay(),
+                      ],
+                    ),
                   ),
-                  // Above the controls layer so it is reachable while they are
-                  // hidden — the offer is at its most useful to a viewer who has
-                  // not touched the screen. Renders nothing when no interval is
-                  // active, so it costs nothing on non-anime playback.
-                  if (!_locked) _buildSkipButton(),
-                  if (!_locked && _panel != _SidePanel.none) _buildSidePanel(),
-                  if (!_locked && _inParty) _buildPartyReactionsLayer(),
-                  // Last, so it covers everything: while a television is
-                  // playing this episode the phone is a remote, and leaving the
-                  // local controls reachable underneath would let someone
-                  // scrub a surface nobody is watching.
-                  _buildCastOverlay(),
-                ],
+                ),
               ),
-            )),
+            ),
           ),
-        )),
+        ),
       ),
     );
   }
@@ -582,7 +1056,9 @@ class _PlayerPageState extends State<PlayerPage>
     if (!isDesktopPlatform) return child;
     return MouseRegion(
       onHover: (_) => _revealControlsForHover(),
-      cursor: _controlsVisible ? MouseCursor.defer : SystemMouseCursors.none,
+      cursor: _controlsVisible || _desktopMini
+          ? MouseCursor.defer
+          : SystemMouseCursors.none,
       child: child,
     );
   }
@@ -599,56 +1075,466 @@ class _PlayerPageState extends State<PlayerPage>
   KeyEventResult _onPlayerKey(FocusNode node, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
     final k = event.logicalKey;
-    // Block playback-control keys (play/pause + seek) when not allowed to
-    // control the party; consume the event so no local action happens.
-    final isPartyControlKey = k == LogicalKeyboardKey.space ||
-        k == LogicalKeyboardKey.mediaPlayPause ||
-        k == LogicalKeyboardKey.arrowLeft ||
-        k == LogicalKeyboardKey.arrowRight;
-    if (isPartyControlKey && _partyBlockLocal()) {
+    if (_desktopMini && k == LogicalKeyboardKey.escape) {
+      _toggleDesktopMini();
       return KeyEventResult.handled;
     }
-    if (k == LogicalKeyboardKey.space ||
-        k == LogicalKeyboardKey.mediaPlayPause) {
-      _togglePlay();
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.arrowLeft) {
-      _seekRelative(-_seekStep);
-      _showSeekRipple(-1);
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.arrowRight) {
-      _seekRelative(_seekStep);
-      _showSeekRipple(1);
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.arrowUp) {
-      _setPlayerVolume(_volume + 0.1);
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.arrowDown) {
-      _setPlayerVolume(_volume - 0.1);
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.keyM) {
-      _toggleMute();
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.keyF) {
-      _toggleFullscreen();
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.escape) {
-      if (_panel != _SidePanel.none) {
-        _closePanel();
-      } else if (_isFullscreen) {
-        _toggleFullscreen();
-      } else {
-        _exit();
+    for (final shortcut in _playerShortcuts) {
+      if (!shortcut.keys.contains(k)) continue;
+      // Swallowed rather than ignored when the party forbids it: the press was
+      // aimed at the player, and passing it on would hand a seek to whatever
+      // happens to be behind.
+      if (shortcut.drivesPlayback && _partyBlockLocal()) {
+        return KeyEventResult.handled;
       }
+      // Autorepeat is welcome on a seek and fatal almost everywhere else: the
+      // key arrives at the OS repeat rate, so a held N walks the season,
+      // tearing down and re-resolving a stream per hop, a held S stacks a
+      // modal sheet on itself, and a held Esc closes the panel, leaves
+      // fullscreen and exits the player in one press. Only the bindings that
+      // asked for it repeat; the rest fire once and swallow the rest of the
+      // burst.
+      if (!shortcut.repeats && event is KeyRepeatEvent) {
+        return KeyEventResult.handled;
+      }
+      shortcut.onKey(k);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
   }
+
+  /// Whether there is a stream to act on yet.
+  ///
+  /// Every binding that moves the picture goes through a controller that
+  /// refuses while nothing is initialized, so during a load those keys are
+  /// dead however long the sheet says otherwise.
+  bool get _playbackReady => _controller?.value.isInitialized ?? false;
+
+  /// Whether the timeline can be moved at all.
+  ///
+  /// A broadcast has no timeline to move around in: [_seekRelative] returns
+  /// outright while [_isLive], and [_seekTo] accepts nothing but the live
+  /// edge. That kills every seek binding — the arrows, J and L, the frame
+  /// step, the deciles and Home — and turns End into "go live", which is not
+  /// what the line printed beside it says.
+  bool get _canSeekByKey => _playbackReady && !_isLive;
+
+  /// Whether the audio-track sheet has anything to show.
+  ///
+  /// Mirrors [_openAudioTrackSheet]'s own guard, and the common case is that
+  /// it does not: only media_kit reports tracks at all, and most streams carry
+  /// a single one.
+  bool get _hasAudioTrackChoice {
+    final c = _controller;
+    return c != null && c.supportsAudioTracks && c.audioTracks.length > 1;
+  }
+
+  /// Every desktop keyboard binding, in the order the cheat-sheet prints them.
+  ///
+  /// The handler and the sheet are built from this one list, because the eight
+  /// keys that came before were spelled out in an if-chain and written down
+  /// nowhere — a shortcut nobody can discover is a shortcut nobody has. A
+  /// binding that is not here does not exist; one that is here is live, and is
+  /// printed for as long as it can actually do something — see
+  /// [_PlayerShortcut.available].
+  List<_PlayerShortcut> get _playerShortcuts => [
+    _PlayerShortcut(
+      keys: const [
+        LogicalKeyboardKey.space,
+        LogicalKeyboardKey.mediaPlayPause,
+        LogicalKeyboardKey.keyK,
+      ],
+      hint: '${'player.key_space'.tr()}  ·  K',
+      label: 'player.shortcut_play_pause'.tr(),
+      drivesPlayback: true,
+      available: _playbackReady,
+      onKey: (_) => _togglePlay(),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.arrowLeft, LogicalKeyboardKey.arrowRight],
+      hint: '←  /  →',
+      label: 'player.shortcut_seek'.tr(args: ['$_seekSeconds']),
+      drivesPlayback: true,
+      available: _canSeekByKey,
+      repeats: true,
+      onKey: (k) => _seekByKey(k == LogicalKeyboardKey.arrowRight ? 1 : -1),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyJ, LogicalKeyboardKey.keyL],
+      hint: 'J  /  L',
+      label: 'player.shortcut_seek_long'.tr(
+        args: ['${_seekSeconds * _kLongSeekSteps}'],
+      ),
+      drivesPlayback: true,
+      available: _canSeekByKey,
+      repeats: true,
+      onKey: (k) => _seekByKey(
+        k == LogicalKeyboardKey.keyL ? _kLongSeekSteps : -_kLongSeekSteps,
+      ),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.comma, LogicalKeyboardKey.period],
+      hint: ',  /  .',
+      label: 'player.shortcut_frame'.tr(),
+      drivesPlayback: true,
+      available: _canSeekByKey,
+      repeats: true,
+      onKey: (k) => _stepFrame(k == LogicalKeyboardKey.period ? 1 : -1),
+    ),
+    _PlayerShortcut(
+      keys: _kDecileKeys,
+      hint: '0 – 9',
+      label: 'player.shortcut_decile'.tr(),
+      drivesPlayback: true,
+      available: _canSeekByKey,
+      onKey: _seekToDecile,
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.arrowUp, LogicalKeyboardKey.arrowDown],
+      hint: '↑  /  ↓',
+      label: 'player.shortcut_volume'.tr(),
+      repeats: true,
+      onKey: (k) => _setPlayerVolume(
+        _volume + (k == LogicalKeyboardKey.arrowUp ? 0.1 : -0.1),
+      ),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyM],
+      hint: 'M',
+      label: 'player.shortcut_mute'.tr(),
+      onKey: (_) => _toggleMute(),
+    ),
+    _PlayerShortcut(
+      keys: const [
+        LogicalKeyboardKey.bracketLeft,
+        LogicalKeyboardKey.bracketRight,
+        LogicalKeyboardKey.minus,
+        LogicalKeyboardKey.equal,
+      ],
+      // The unshifted legends, because those are the keys that are bound:
+      // `equal`, not the `+` that needs Shift, and the hyphen-minus engraved
+      // on the key rather than a typographic minus sign.
+      hint: '[  /  ]   ·   -  /  =',
+      label: 'player.shortcut_speed'.tr(),
+      drivesPlayback: true,
+      onKey: (k) => _stepSpeed(
+        k == LogicalKeyboardKey.bracketRight || k == LogicalKeyboardKey.equal
+            ? 1
+            : -1,
+      ),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyF],
+      hint: 'F',
+      label: 'player.fullscreen'.tr(),
+      onKey: (_) => _toggleFullscreen(),
+    ),
+    // The mini window: above other windows, the same player at 426 wide.
+    // I rather than P, which is already the previous episode.
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyI],
+      hint: 'I',
+      label: 'player.pip'.tr(),
+      available: isDesktopPlatform,
+      onKey: (_) => _toggleDesktopMini(),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyS],
+      hint: 'S',
+      label: 'player.subtitles'.tr(),
+      onKey: (_) => _openSubtitleSheet(),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyA],
+      hint: 'A',
+      label: 'player.audio_track'.tr(),
+      // Printed only when the sheet would open. A stream with one audio track
+      // — which is most of them — and every engine but media_kit leave this
+      // key silent, and a silent key on the sheet is the lie the sheet exists
+      // to avoid.
+      available: _hasAudioTrackChoice,
+      onKey: (_) => _openAudioTrackSheet(),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.keyP, LogicalKeyboardKey.keyN],
+      hint: 'P  /  N',
+      label: 'player.shortcut_episode'.tr(),
+      // Unprinted on a film, where both keys would be dead: a printed line
+      // that does nothing teaches the viewer to distrust the rest of the
+      // sheet.
+      available: _affordances.hasEpisodes,
+      onKey: (k) {
+        final forward = k == LogicalKeyboardKey.keyN;
+        if (forward ? _hasNextEpisode : _hasPrevEpisode) {
+          _partyEpisodeNav(_episodeIndex + (forward ? 1 : -1));
+        }
+      },
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.home, LogicalKeyboardKey.end],
+      hint: 'Home  /  End',
+      label: 'player.shortcut_start_end'.tr(),
+      drivesPlayback: true,
+      available: _canSeekByKey,
+      onKey: (k) {
+        final c = _controller;
+        if (c == null || !c.value.isInitialized) return;
+        _seekTo(
+          k == LogicalKeyboardKey.home ? Duration.zero : c.value.duration,
+        );
+      },
+    ),
+    _PlayerShortcut(
+      // Shift+/ arrives as the question mark on some platforms and as the
+      // slash on others; it is one press either way.
+      keys: const [LogicalKeyboardKey.question, LogicalKeyboardKey.slash],
+      hint: '?',
+      label: 'player.shortcut_help'.tr(),
+      onKey: (_) => _openShortcutsSheet(),
+    ),
+    _PlayerShortcut(
+      keys: const [LogicalKeyboardKey.escape],
+      hint: 'Esc',
+      label: 'player.shortcut_escape'.tr(),
+      // Deliberately not marked as driving playback: a guest who may not touch
+      // the stream still has to be able to leave the room.
+      onKey: (_) {
+        if (_panel != _SidePanel.none) {
+          _closePanel();
+        } else if (_isFullscreen) {
+          _toggleFullscreen();
+        } else {
+          _exit();
+        }
+      },
+    ),
+  ];
+
+  /// Both seek bindings, counted in arrow-steps: the arrows move one, J and L
+  /// move [_kLongSeekSteps].
+  ///
+  /// Steps rather than seconds because the ripple counts in steps too — it
+  /// adds one step's worth per call, which is what makes a double tap read
+  /// "+20s". A long jump therefore has to announce itself once per step it
+  /// took, or it lands thirty seconds away under an overlay that says ten.
+  void _seekByKey(int steps) {
+    _seekRelative(_seekStep * steps);
+    for (var i = 0; i < steps.abs(); i++) {
+      _showSeekRipple(steps.isNegative ? -1 : 1);
+    }
+  }
+
+  /// No engine here exposes a frame step, so this nudges by roughly one frame
+  /// at 24fps — close enough to walk through a shot, far enough that the seek
+  /// actually lands somewhere new.
+  void _stepFrame(int direction) =>
+      _seekRelative(Duration(milliseconds: 42 * direction));
+
+  void _seekToDecile(LogicalKeyboardKey key) {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    final total = c.value.duration;
+    if (total <= Duration.zero) return;
+    // The numpad row is listed straight after the digit row, so the remainder
+    // is the digit whichever half of the keyboard it came from.
+    final index = _kDecileKeys.indexOf(key);
+    if (index < 0) return;
+    _seekTo(total * ((index % 10) / 10));
+  }
+
+  void _stepSpeed(int direction) {
+    // Nearest rung rather than an exact match: a party host can set a rate that
+    // is not on the ladder, and the key still has to do something sensible.
+    var from = 0;
+    for (var i = 1; i < _kKeyboardSpeeds.length; i++) {
+      if ((_kKeyboardSpeeds[i] - _playbackSpeed).abs() <
+          (_kKeyboardSpeeds[from] - _playbackSpeed).abs()) {
+        from = i;
+      }
+    }
+    final next = (from + direction).clamp(0, _kKeyboardSpeeds.length - 1);
+    if (_kKeyboardSpeeds[next] != _playbackSpeed) {
+      _setSpeed(_kKeyboardSpeeds[next]);
+    }
+  }
+
+  void _openShortcutsSheet() {
+    // Only the lines that would do something if pressed right now. The whole
+    // point of a cheat-sheet is that what is printed is what you get, and the
+    // filtered bindings stay bound — the key is still swallowed rather than
+    // escaping into focus traversal behind the player.
+    final shortcuts = [
+      for (final shortcut in _playerShortcuts)
+        if (shortcut.available) shortcut,
+    ];
+    showAdaptiveModal<void>(
+      context: context,
+      backgroundColor: const Color(0xFF111111),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      desktopMaxWidth: 520,
+      builder: (_) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.keyboard_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'player.shortcuts_title'.tr(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              for (final shortcut in shortcuts)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 9,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 128,
+                        child: Text(
+                          shortcut.hint,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          shortcut.label,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
+
+/// One desktop keyboard binding: the keys that fire it, how those keys are
+/// written down, and what they do.
+///
+/// See [_PlayerPageState._playerShortcuts] for why the key handler and the
+/// cheat-sheet are the same list.
+class _PlayerShortcut {
+  const _PlayerShortcut({
+    required this.keys,
+    required this.hint,
+    required this.label,
+    required this.onKey,
+    this.drivesPlayback = false,
+    this.available = true,
+    this.repeats = false,
+  });
+
+  final List<LogicalKeyboardKey> keys;
+
+  /// The keys as the cheat-sheet prints them, e.g. "J / L". Key legends are
+  /// left untranslated — what is engraved on the key does not change with the
+  /// app's language — so the one entry that is a word rather than a legend,
+  /// the space bar, goes through `tr` at the call site.
+  final String hint;
+
+  /// Already localised.
+  final String label;
+
+  /// Handed the key that matched, so a single entry can cover a range: the ten
+  /// digits are one binding here and one line on the sheet.
+  final void Function(LogicalKeyboardKey key) onKey;
+
+  /// Moves the picture, so a party guest who may not drive playback must not
+  /// reach it. Volume, mute and the panels are local to this screen and stay
+  /// open to everyone.
+  final bool drivesPlayback;
+
+  /// Whether this binding can do anything in the state the player is in right
+  /// now — there is a stream, the timeline can be moved, the sheet behind the
+  /// key has rows in it.
+  ///
+  /// It governs the cheat-sheet only. The binding stays live either way, both
+  /// because the underlying action guards itself anyway and because a key the
+  /// player owns should not escape into focus traversal behind it on the one
+  /// frame this getter says no.
+  final bool available;
+
+  /// Whether holding the key should keep firing it.
+  ///
+  /// Off by default, because that is the answer everywhere except seeking and
+  /// volume: autorepeat arrives at the OS repeat rate, and thirty presses a
+  /// second flaps a toggle, stacks a modal sheet on itself, walks the speed
+  /// ladder end to end, and — on the episode keys — tears down and
+  /// re-resolves a stream per hop. Seek and volume are the two where a press
+  /// is cheap and cumulative, and where holding the key is how the control is
+  /// meant to be used.
+  final bool repeats;
+}
+
+/// How much further J and L go than the arrows. A multiple of the viewer's own
+/// seek step rather than a fixed thirty seconds, so the long jump stays
+/// clearly longer than the short one however the step was set in Settings.
+const _kLongSeekSteps = 3;
+
+/// The digit row followed by the numpad in the same order, so the index modulo
+/// ten is the digit whichever half was pressed.
+const _kDecileKeys = <LogicalKeyboardKey>[
+  LogicalKeyboardKey.digit0,
+  LogicalKeyboardKey.digit1,
+  LogicalKeyboardKey.digit2,
+  LogicalKeyboardKey.digit3,
+  LogicalKeyboardKey.digit4,
+  LogicalKeyboardKey.digit5,
+  LogicalKeyboardKey.digit6,
+  LogicalKeyboardKey.digit7,
+  LogicalKeyboardKey.digit8,
+  LogicalKeyboardKey.digit9,
+  LogicalKeyboardKey.numpad0,
+  LogicalKeyboardKey.numpad1,
+  LogicalKeyboardKey.numpad2,
+  LogicalKeyboardKey.numpad3,
+  LogicalKeyboardKey.numpad4,
+  LogicalKeyboardKey.numpad5,
+  LogicalKeyboardKey.numpad6,
+  LogicalKeyboardKey.numpad7,
+  LogicalKeyboardKey.numpad8,
+  LogicalKeyboardKey.numpad9,
+];
+
+/// The rungs [ and ] climb. Deliberately the same set the speed sheet offers
+/// (player_page.panels.dart): a key that landed between its rows would leave
+/// the sheet open with nothing selected.
+const _kKeyboardSpeeds = <double>[0.5, 0.75, 1.0, 1.25, 1.5, 2.0];

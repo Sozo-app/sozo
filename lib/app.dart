@@ -2,17 +2,21 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
+import 'package:soplay/features/profiles/presentation/widgets/profile_gate.dart';
+import 'package:soplay/core/localization/borrowed_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:soplay/core/navigation/app_tab.dart';
-import 'package:soplay/core/navigation/nav_controller.dart';
+import 'package:soplay/core/localization/app_language.dart';
 import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/tv/tv.dart';
-import 'package:soplay/features/auth/presentation/bloc/auth_event.dart';
-import 'package:soplay/features/detail/domain/entities/detail_args.dart';
-import 'package:soplay/features/home/presentation/bloc/view_all/view_all_bloc.dart';
+import 'package:soplay/features/app_lock/presentation/widgets/app_lock_overlay.dart';
 import 'package:soplay/features/notifications/data/services/notification_service.dart';
+import 'package:soplay/features/notifications/presentation/notification_routing.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_bloc.dart';
+import 'package:soplay/features/profile/presentation/bloc/provider_state.dart';
+import 'package:soplay/core/content/catalogue.dart';
+import 'package:soplay/features/sources/domain/source_check_service.dart';
+import 'package:soplay/features/tracker/data/release_watch.dart';
 import 'package:soplay/features/profile/presentation/bloc/provider_event.dart';
 import 'package:soplay/features/search/presentation/blocs/search_bloc.dart';
 
@@ -24,6 +28,9 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/theme_controller.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/home/presentation/bloc/home/home_bloc.dart';
+import 'package:soplay/features/achievements/presentation/widgets/achievement_celebration_host.dart';
+import 'package:soplay/features/home_widget/home_widget_sync.dart';
+import 'package:soplay/core/storage/hive_service.dart';
 
 /// Desktop scroll behaviour: adds mouse + trackpad + stylus as drag devices so
 /// touch-oriented scrollables (PageView, horizontal ListViews) can be dragged
@@ -33,11 +40,11 @@ class _DesktopScrollBehavior extends MaterialScrollBehavior {
 
   @override
   Set<PointerDeviceKind> get dragDevices => <PointerDeviceKind>{
-        PointerDeviceKind.touch,
-        PointerDeviceKind.mouse,
-        PointerDeviceKind.trackpad,
-        PointerDeviceKind.stylus,
-      };
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.trackpad,
+    PointerDeviceKind.stylus,
+  };
 }
 
 class MyApp extends StatefulWidget {
@@ -55,6 +62,17 @@ class _MyAppState extends State<MyApp> {
     super.initState();
     _theme.addListener(_onThemeChanged);
     getIt<NotificationService>().onTap = _handlePushTap;
+    // After the first frame, because `context.locale` reads an inherited widget
+    // and initState is too early to depend on one.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppLanguage.syncFromDevice(context);
+      // The translations exist from here on: name the notification channels
+      // in the user's language, and hand the same words to the background
+      // check, which has no translations of its own.
+      getIt<NotificationService>().refreshChannels();
+      getIt<ReleaseWatch>().writeSnapshot();
+      getIt<HomeWidgetSync>().start();
+    });
     // Desktop: hide the custom title-bar strip on the immersive full-bleed
     // routes (player / reader) by watching the router itself — reliable
     // regardless of a page's initState timing.
@@ -131,107 +149,118 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
-  void _handlePushTap(Map<String, dynamic> data) {
-    final router = AppRouter.router;
-
-    // Watch-party invites arrive as type:'system_other' + data.roomCode, so a
-    // type-based branch would never fire — key off roomCode before the switch.
-    final roomCode = data['roomCode'];
-    if (roomCode is String && roomCode.isNotEmpty) {
-      router.push('/watch-party?code=$roomCode');
-      return;
-    }
-
-    final type = data['type']?.toString() ?? '';
-    final contentUrl = data['contentUrl']?.toString();
-    final provider = data['provider']?.toString();
-
-    switch (type) {
-      case 'system_comment_reply':
-      case 'system_comment_like':
-        if (contentUrl != null && contentUrl.isNotEmpty) {
-          router.push(
-            '/detail',
-            extra: DetailArgs(contentUrl: contentUrl, provider: provider),
-          );
-        } else {
-          router.push('/notifications');
-        }
-      case 'system_ban':
-        getIt<AuthBloc>().add(AuthSessionExpired());
-        router.go('/login');
-      case 'system_unban':
-      case 'admin_broadcast':
-      case 'admin_direct':
-        router.push('/notifications');
-      case 'streak_risk':
-        getIt<NavController>().goToId(TabId.profile);
-      default:
-        router.push('/notifications');
-    }
-  }
+  void _handlePushTap(Map<String, dynamic> data) => openNotification(data);
 
   @override
   Widget build(BuildContext context) {
     return MultiBlocProvider(
       providers: [
         BlocProvider<AuthBloc>.value(value: getIt<AuthBloc>()),
-        BlocProvider<ViewAllBloc>(create: (_) => getIt<ViewAllBloc>()),
         BlocProvider<HomeBloc>(create: (_) => getIt<HomeBloc>()),
         BlocProvider<SearchBloc>(create: (_) => getIt<SearchBloc>()),
         BlocProvider<ProviderBloc>(
           create: (_) => getIt<ProviderBloc>()..add(const ProviderLoad()),
         ),
       ],
-      child: MaterialApp.router(
-        title: 'app_name'.tr(),
-        debugShowCheckedModeBanner: false,
-        // The colour the OS paints behind the app — the task-switcher card and
-        // the gap before the first frame. Left at its default it is the theme's
-        // primary, so an accent change would otherwise leave a red card behind
-        // a blue app.
-        color: AppColors.background,
-        theme: AppTheme.dark,
-        darkTheme: AppTheme.dark,
-        themeMode: ThemeMode.dark,
-        // Desktop: let horizontal rows / carousels / the Shorts feed be dragged
-        // with a mouse & trackpad. Mobile keeps Flutter's default behaviour.
-        scrollBehavior: isDesktopPlatform ? const _DesktopScrollBehavior() : null,
-        routerConfig: AppRouter.router,
-        // Desktop: a custom frameless title bar + Esc-to-dismiss (closes the
-        // topmost dialog/sheet, else pops the page). Mobile returns the child
-        // unchanged.
-        builder: (context, child) {
-          final app = child ?? const SizedBox.shrink();
-          // Android TV: Flutter's default shortcut map activates the focused
-          // widget on enter/space, but a remote's OK button arrives as
-          // DPAD_CENTER (LogicalKeyboardKey.select) and a game controller's as
-          // gameButtonA. Without these two bindings the D-pad can move focus
-          // but can never press anything. Additive + TV-gated: phone and
-          // desktop fall through to the paths below unchanged.
-          if (isTvPlatform) return TvShortcuts(child: app);
-          if (!isDesktopPlatform) return app;
-          final shell = Column(
-            children: [
-              const WindowTitleBar(),
-              Expanded(child: app),
-            ],
-          );
-          return CallbackShortcuts(
-            bindings: {
-              // Dismiss the topmost route on the real Navigator — a dialog/sheet
-              // if one is open, otherwise the page. (GoRouter.pop() ignores
-              // imperative overlays and would pop the page under a dialog.)
-              const SingleActivator(LogicalKeyboardKey.escape):
-                  AppRouter.dismissTopmost,
-            },
-            child: Focus(autofocus: true, child: shell),
-          );
-        },
-        localizationsDelegates: context.localizationDelegates,
-        supportedLocales: context.supportedLocales,
-        locale: context.locale,
+      child: BlocListener<ProviderBloc, ProviderState>(
+        listenWhen: (prev, next) =>
+            prev is! ProviderLoaded && next is ProviderLoaded,
+        listener: (context, _) => _scheduleSourceSweep(context),
+        child: MaterialApp.router(
+          title: 'app_name'.tr(),
+          debugShowCheckedModeBanner: false,
+          // The colour the OS paints behind the app — the task-switcher card and
+          // the gap before the first frame. Left at its default it is the theme's
+          // primary, so an accent change would otherwise leave a red card behind
+          // a blue app.
+          color: AppColors.background,
+          theme: AppTheme.dark,
+          darkTheme: AppTheme.dark,
+          themeMode: ThemeMode.dark,
+          // Desktop: let horizontal rows / carousels / the Shorts feed be dragged
+          // with a mouse & trackpad. Mobile keeps Flutter's default behaviour.
+          scrollBehavior: isDesktopPlatform
+              ? const _DesktopScrollBehavior()
+              : null,
+          routerConfig: AppRouter.router,
+          // Desktop: a custom frameless title bar + Esc-to-dismiss (closes the
+          // topmost dialog/sheet, else pops the page). Mobile returns the child
+          // unchanged.
+          builder: (context, child) {
+            // The app lock covers the router rather than being a route in it:
+            // a deep link or a push tap navigates underneath and is simply
+            // revealed on unlock, and relocking on return from the background
+            // keeps the whole navigation stack — a redirect would have thrown
+            // away the pages below, and the `extra` arguments pages like the
+            // player are opened with.
+            final app = AppLockOverlay(
+              child: ProfileGate(
+                child: AchievementCelebrationHost(
+                  child: child ?? const SizedBox.shrink(),
+                ),
+              ),
+            );
+            // Android TV: Flutter's default shortcut map activates the focused
+            // widget on enter/space, but a remote's OK button arrives as
+            // DPAD_CENTER (LogicalKeyboardKey.select) and a game controller's as
+            // gameButtonA. Without these two bindings the D-pad can move focus
+            // but can never press anything. Additive + TV-gated: phone and
+            // desktop fall through to the paths below unchanged.
+            if (isTvPlatform) return TvShortcuts(child: app);
+            if (!isDesktopPlatform) return app;
+            final shell = Column(
+              children: [
+                const WindowTitleBar(),
+                Expanded(child: app),
+              ],
+            );
+            return CallbackShortcuts(
+              bindings: {
+                // Dismiss the topmost route on the real Navigator — a dialog/sheet
+                // if one is open, otherwise the page. (GoRouter.pop() ignores
+                // imperative overlays and would pop the page under a dialog.)
+                const SingleActivator(LogicalKeyboardKey.escape):
+                    AppRouter.dismissTopmost,
+              },
+              child: Focus(autofocus: true, child: shell),
+            );
+          },
+          // First: Cantonese and Kurdish are the locales Flutter itself does
+          // not ship, and these delegates claim nothing else. See
+          // [kBorrowedLocalizationsDelegates].
+          localizationsDelegates: [
+            ...kBorrowedLocalizationsDelegates,
+            ...context.localizationDelegates,
+          ],
+          supportedLocales: context.supportedLocales,
+          locale: context.locale,
+        ),
       ),
     );
+  }
+
+  /// Keeps what this phone knows about its sources fresh, a few at a time —
+  /// with hundreds installed, nobody runs a full check often enough.
+  void _scheduleSourceSweep(BuildContext context) {
+    final bloc = context.read<ProviderBloc>();
+    // A widget tap opens a title on its own source, as Home would; this is
+    // the first place below the provider bloc to hand the widget that.
+    getIt<HomeWidgetSync>()
+      ..selectSource = ((id) => bloc.add(ProviderSelect(id)))
+      ..currentSource = () {
+        final state = bloc.state;
+        return state is ProviderLoaded
+            ? state.currentProviderId
+            : getIt<HiveService>().getCurrentProvider();
+      };
+    if (!getIt.isRegistered<SourceCheckService>()) return;
+    getIt<SourceCheckService>().scheduleSweep(() {
+      final state = bloc.state;
+      if (state is! ProviderLoaded) return const [];
+      return [
+        for (final p in state.providers)
+          if (state.isUsable(p) && !Catalogue.isId(p.id)) p.id,
+      ];
+    });
   }
 }

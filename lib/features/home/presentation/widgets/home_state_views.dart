@@ -1,4 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:soplay/features/sources/domain/source_failure.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:soplay/core/di/injection.dart';
@@ -9,6 +10,8 @@ import 'package:soplay/features/home/presentation/bloc/home/home_bloc.dart';
 import 'package:soplay/features/home/presentation/bloc/home/home_event.dart';
 import 'package:soplay/features/home/presentation/widgets/home_banner.dart';
 import 'package:soplay/features/home/presentation/widgets/home_shared_widgets.dart';
+import 'package:soplay/features/support/presentation/widgets/support_suggestion.dart';
+import 'package:soplay/features/support/data/support_models.dart';
 
 class HomeSkeleton extends StatelessWidget {
   const HomeSkeleton({super.key});
@@ -35,7 +38,7 @@ class HomeSkeleton extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Padding(
-                    padding: EdgeInsets.fromLTRB(17, 18, 16, 14),
+                    padding: EdgeInsetsDirectional.fromSTEB(17, 18, 16, 14),
                     child: HomeSkeletonBox(width: 80, height: 19, radius: 4),
                   ),
                   SizedBox(
@@ -61,7 +64,7 @@ class HomeSkeleton extends StatelessWidget {
           for (int i = 0; i < 3; i++) ...[
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(17, 18, 20, 14),
+                padding: const EdgeInsetsDirectional.fromSTEB(17, 18, 20, 14),
                 child: Row(
                   children: [
                     HomeSkeletonBox(
@@ -143,6 +146,129 @@ class _SkeletonCard extends StatelessWidget {
   }
 }
 
+/// The picture that goes with a failure.
+///
+/// One icon for everything told the reader they were offline about a site that
+/// had shut down, about an extension that would not load, and about a
+/// Cloudflare wall the strip was at that same moment offering a button to
+/// solve — three problems with three different answers wearing one icon.
+///
+/// The branch used to live here and re-derive the kind from the raw string,
+/// beside a [SourceFailure] that had just done the same work. It reads the
+/// kind now, so the two can no longer disagree.
+IconData _failureIcon(SourceFailure failure) => switch (failure.kind) {
+  // The only kind that is genuinely about the reader's connection.
+  SourceFailureKind.unreachable => Icons.wifi_off_rounded,
+  SourceFailureKind.blocked => Icons.shield_outlined,
+  SourceFailureKind.rateLimited => Icons.hourglass_empty_rounded,
+  // The source is what is broken, either its code or its contract.
+  SourceFailureKind.outdated => Icons.update_rounded,
+  SourceFailureKind.incompatible ||
+  SourceFailureKind.broken => Icons.extension_off_rounded,
+  // Reached, answered, and the answer was no.
+  SourceFailureKind.gone || SourceFailureKind.unknown => Icons.cloud_off_rounded,
+};
+
+
+/// The catalogue failed, said inline above the rows that still work.
+///
+/// Same words and the same two buttons as [HomeErrorView] — including the
+/// Cloudflare branch, so the decision about when to offer a solve lives in one
+/// place — but as a band rather than a full screen. The full-screen view is
+/// still right when there is genuinely nothing else to show; this is for when
+/// Continue Watching and the downloads are sitting right underneath.
+class HomeErrorStrip extends StatelessWidget {
+  const HomeErrorStrip({super.key, this.message});
+
+  final String? message;
+
+  Future<void> _solveCloudflare(BuildContext context) async {
+    final bloc = context.read<HomeBloc>();
+    final provider = getIt<HiveService>().getCurrentProvider();
+    final ok = await requestCloudflareSolve(context, provider);
+    if (ok) bloc.add(HomeLoad());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showCloudflare = isCloudflareError(message);
+    // The extension's own wording said "HttpException: HTTP error 404" over a
+    // headline that said "Network error" — two different wrong answers to the
+    // same question. SourceFailure tells a site that shut down from a phone
+    // with no signal, and keeps the original as the detail line.
+    final failure = SourceFailure.of(message);
+    // Only when it says something the headline does not. An unrecognised
+    // failure IS its own headline, and repeating it underneath printed the
+    // same sentence twice.
+    final detail = failure.detail?.trim();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceVariant,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(_failureIcon(failure),
+                  color: AppColors.textSecondary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  failure.headline,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () => context.read<HomeBloc>().add(HomeLoad()),
+                child: Text('general.retry'.tr()),
+              ),
+            ],
+          ),
+          // The real diagnostic, for the same reason the full view keeps it: a
+          // native extension failure is not the same thing as being offline,
+          // and the difference is only visible here.
+          if (!showCloudflare && (detail?.isNotEmpty ?? false))
+            Padding(
+              padding: const EdgeInsets.only(left: 28, top: 2),
+              child: SelectableText(
+                detail!,
+                maxLines: 2,
+                style: const TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: 11,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          if (showCloudflare)
+            Padding(
+              padding: const EdgeInsets.only(left: 28, top: 6),
+              child: OutlinedButton.icon(
+                onPressed: () => _solveCloudflare(context),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  side: BorderSide(color: AppColors.border),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.shield_outlined, size: 16),
+                label: Text('cloudflare.solve'.tr()),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class HomeErrorView extends StatelessWidget {
   const HomeErrorView({super.key, this.message});
 
@@ -158,6 +284,7 @@ class HomeErrorView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final showCloudflare = isCloudflareError(message);
+    final failure = SourceFailure.of(message);
     // Scrollable: with a long diagnostic and the extra Cloudflare button this
     // column is taller than a short phone in landscape.
     return Center(
@@ -174,15 +301,15 @@ class HomeErrorView extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
               ),
-              child: const Icon(
-                Icons.wifi_off_rounded,
+              child: Icon(
+                _failureIcon(failure),
                 color: AppColors.textSecondary,
                 size: 32,
               ),
             ),
             const SizedBox(height: 18),
             Text(
-              'errors.network'.tr(),
+              failure.headline,
               style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 16,
@@ -210,10 +337,11 @@ class HomeErrorView extends StatelessWidget {
             // favour of a generic "network error". That made an extension
             // problem indistinguishable from being offline, for us as much as
             // for the user. Selectable so it can be copied into a bug report.
-            if (!showCloudflare && (message?.trim().isNotEmpty ?? false)) ...[
+            if (!showCloudflare &&
+                (failure.detail?.trim().isNotEmpty ?? false)) ...[
               const SizedBox(height: 10),
               SelectableText(
-                message!.trim(),
+                failure.detail!.trim(),
                 maxLines: 4,
                 style: const TextStyle(
                   color: AppColors.textHint,
@@ -224,9 +352,11 @@ class HomeErrorView extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 24),
-            SizedBox(
-              width: 156,
-              height: 44,
+            ConstrainedBox(
+              // Minimum, not fixed: "Retry" is five characters in English
+              // and fourteen in Portuguese, and a hard width clips the
+              // longer ones silently in a release build.
+              constraints: const BoxConstraints(minWidth: 156, minHeight: 44),
               child: ElevatedButton(
                 onPressed: () => context.read<HomeBloc>().add(HomeLoad()),
                 child: Text('general.retry'.tr()),
@@ -248,6 +378,13 @@ class HomeErrorView extends StatelessWidget {
                 ),
               ),
             ],
+            const SizedBox(height: 8),
+            SupportSuggestion(
+              screen: 'home',
+              category: SupportCategory.content,
+              provider: getIt<HiveService>().getCurrentProvider(),
+              error: failure.detail ?? message,
+            ),
           ],
         ),
       ),
@@ -307,9 +444,11 @@ class HomeEmptyView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-            SizedBox(
-              width: 156,
-              height: 44,
+            ConstrainedBox(
+              // Minimum, not fixed: "Retry" is five characters in English
+              // and fourteen in Portuguese, and a hard width clips the
+              // longer ones silently in a release build.
+              constraints: const BoxConstraints(minWidth: 156, minHeight: 44),
               child: ElevatedButton(
                 onPressed: onRefresh,
                 child: Text('general.retry'.tr()),

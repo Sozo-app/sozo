@@ -1,16 +1,23 @@
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:easy_localization/easy_localization.dart';
+import 'package:soplay/features/trakt/data/trakt_service.dart';
 import 'package:soplay/core/error/result.dart';
 import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/features/my_list/data/datasources/my_list_local_data_source.dart';
+import 'package:soplay/features/stats/data/watch_stats_store.dart';
+import 'package:soplay/features/streak/data/streak_service.dart';
 import 'package:soplay/features/auth/data/models/user_model.dart';
 import 'package:soplay/features/auth/domain/entities/auth_token.dart';
 import 'package:soplay/features/auth/domain/entities/user_entity.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../datasources/auth_remote_data_source.dart';
+import 'package:soplay/core/constants/app_constants.dart';
 import 'package:soplay/core/di/injection.dart';
 import 'package:soplay/features/history/data/history_sync_service.dart';
+import 'package:soplay/features/profiles/data/profile_session.dart';
 import 'package:soplay/features/anilist/data/anilist_link_store.dart';
 import 'package:soplay/features/anilist/data/anilist_service.dart';
 import 'package:soplay/features/mal/data/mal_link_store.dart';
@@ -242,14 +249,21 @@ class AuthRepositoryImpl implements AuthRepository {
 
   @override
   Future<void> logout() async {
+    // The server call is a courtesy — it revokes the refresh token there. The
+    // local wipe is the part that matters on this device, so it runs whatever
+    // the call does; it used to be skipped on anything but a DioException.
     try {
-      await _remoteDataSource.logout();
-    } on DioException {
+      await _remoteDataSource.logout(
+        refreshToken: _hiveService.getRefreshToken(),
+      );
+    } catch (_) {
+    } finally {
       await _clearAccountScopedData();
-      return;
     }
-    await _clearAccountScopedData();
   }
+
+  @override
+  Future<void> clearLocalSession() => _clearAccountScopedData();
 
   /// Tokens are not the only account-scoped state on the device.
   ///
@@ -262,8 +276,17 @@ class AuthRepositoryImpl implements AuthRepository {
   /// person's viewing under a stranger's AniList or MyAnimeList profile.
   Future<void> _clearAccountScopedData() async {
     await _hiveService.clearAuth();
+    // First, so everything below clears the default profile's boxes, which
+    // are the ones that stay on the device.
+    if (getIt.isRegistered<ProfileSession>()) {
+      await getIt<ProfileSession>().forgetAll();
+    }
     if (getIt.isRegistered<HistorySyncService>()) {
-      await getIt<HistorySyncService>().clear();
+      // The rows as well as the cursor. Clearing only the cursor left the
+      // previous account's watch history on screen after they signed out —
+      // Continue Watching, the History page and the counts in Profile all
+      // still listed it, which is the account's data outliving the account.
+      await getIt<HistorySyncService>().forgetAfterSignOut();
     }
     if (getIt.isRegistered<AnilistService>()) {
       await getIt<AnilistService>().forgetLocal();
@@ -273,10 +296,34 @@ class AuthRepositoryImpl implements AuthRepository {
     }
     if (getIt.isRegistered<MalService>()) {
       await getIt<MalService>().forgetLocal();
+      await getIt<TraktService>().forgetLocal();
     }
     if (getIt.isRegistered<MalLinkStore>()) {
       await getIt<MalLinkStore>().clear();
     }
+
+    // Everything else the account put on this device.
+    //
+    // All of it is server-backed and comes back on the next sign-in: My List is
+    // re-upserted from the server, the streak is refetched, and the statistics
+    // are rebuilt from the account's own history. Leaving any of it behind
+    // means somebody signs out, hands over the phone, and the next person opens
+    // the app to another person's saved titles, streak and viewing totals.
+    if (getIt.isRegistered<MyListLocalDataSource>()) {
+      await getIt<MyListLocalDataSource>().clearLocalOnly();
+    }
+    // Watch Later / Watched: the same kind of server-backed cache as My List,
+    // and it was the one left behind.
+    if (Hive.isBoxOpen(AppConstants.userListsBox)) {
+      await Hive.box(AppConstants.userListsBox).clear();
+    }
+    if (getIt.isRegistered<StreakService>()) {
+      getIt<StreakService>().reset();
+    }
+    // Not server-backed, and cleared for exactly that reason: nothing would
+    // ever remove it otherwise, and a watch-time total is as personal as the
+    // history it was counted from.
+    await WatchStatsStore().clear();
   }
 
   String _messageFrom(DioException e) {

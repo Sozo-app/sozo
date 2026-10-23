@@ -1,0 +1,187 @@
+import 'package:soplay/core/player/quality_preference.dart';
+import 'package:soplay/features/detail/data/title_prefs_store.dart';
+import 'package:soplay/features/detail/domain/video_option_groups.dart';
+import 'package:soplay/features/detail/domain/entities/video_source_entity.dart';
+
+/// Which mirror to play, and which one to try after that.
+///
+/// A resolve hands back several mirrors of the same episode. Deciding between
+/// them was spread across four places that each answered it differently: a
+/// movie consulted the remembered quality, an episode took `sources[0]`
+/// outright, a watch-party guest took `sources[0]` too, and the retry path
+/// took `_currentSourceIndex + 1` exactly once before giving up. So the same
+/// title played at a different quality depending on how you opened it, and a
+/// list of five mirrors was never walked past the second.
+///
+/// This is that decision, alone, as data in and an index out. No Flutter, no
+/// getIt, no I/O, no clock — there is a test that keeps it that way.
+///
+/// ## Why untried mirrors are tracked by url, not index
+///
+/// The candidate list is REPLACED on every re-resolve (`_loadEpisode` builds a
+/// new one), so an index means nothing across that boundary — index 2 of the
+/// old list is a different mirror in the new one. The retry path re-resolves,
+/// which is exactly when the old bookkeeping was wiped and the walk restarted
+/// at the top. Urls survive it.
+class SourceLadder {
+  const SourceLadder({
+    required this.sources,
+    required this.hasDirective,
+    this.rememberedQuality,
+    this.avoidCodec,
+    this.triedUrls = const <String>{},
+    this.preferredHeight = QualityPreference.auto,
+  });
+
+  final List<VideoSourceEntity> sources;
+
+  /// Whether the resolve carried an extractor directive
+  /// (`MediaResolveEntity.extractor`), i.e. whether an embed page will be
+  /// sniffed for its real stream before playback.
+  final bool hasDirective;
+
+  /// The quality label this title was last watched at, if any. Matched on the
+  /// label rather than the index, because the label is what the viewer chose
+  /// and the index is an accident of whatever the resolve returned this time.
+  final String? rememberedQuality;
+
+  /// Set after a decoder failure, so sibling mirrors in the same codec go to
+  /// the back of the queue. Demoted, never dropped — an h265-only title must
+  /// still play its h265 rather than report that it has no sources.
+  final String? avoidCodec;
+
+  /// Mirrors already attempted this session, by `videoUrl`.
+  final Set<String> triedUrls;
+
+  /// A [QualityPreference] value: the viewer's standing choice of height,
+  /// below a remembered label but above the provider's default, because it
+  /// is the viewer's decision and the default is the provider's.
+  final int preferredHeight;
+
+  /// Whether this candidate is worth handing to the player at all.
+  ///
+  /// Two ways it is not. A source the backend already probed and marked
+  /// unreachable is a wasted attempt with a spinner in front of it. And a
+  /// `type: 'iframe'` entry is not a stream — it is an embed PAGE. Some
+  /// providers push one first for every server, so `sources[0]` was routinely
+  /// an HTML document handed to a video decoder. That only becomes playable
+  /// once a directive says a WebView will sniff the real stream out of it.
+  static bool isPlayable(VideoSourceEntity s, {required bool hasDirective}) {
+    if (!s.accessible) return false;
+    if (s.videoUrl.isEmpty) return false;
+    if (s.type == 'iframe' && !hasDirective) return false;
+    return true;
+  }
+
+  /// Every candidate still worth trying, best first, as indices into [sources].
+  ///
+  /// Precedence, in order:
+  ///   1. the remembered quality label — an explicit past choice outranks
+  ///      everything below it;
+  ///   2. the height [preferredHeight] picks out of what is on offer;
+  ///   3. the source's own default;
+  ///   4. the higher resolution;
+  ///   5. the order the backend returned.
+  /// A codec being avoided sinks below all of them without leaving the list.
+  ///
+  /// Rule 3 used not to exist, on the assumption recorded here that the backend
+  /// order is already ranked. It is for most providers — anilibria lists 1080p
+  /// first, animedia marks its highest as the default — but asilmedia and
+  /// animefenix mark no default at all and emit sources in page order, which on
+  /// asilmedia is a 360p ahead of a 720p. So a film opened from those played,
+  /// and downloaded, at 360p with a 720p sitting in the same list.
+  ///
+  /// Only a tiebreak: an explicit past choice and a provider's own default both
+  /// still win, because both are somebody's decision and this is a guess.
+  List<int> ordered() {
+    final candidates = <int>[];
+    for (var i = 0; i < sources.length; i++) {
+      final s = sources[i];
+      if (!isPlayable(s, hasDirective: hasDirective)) continue;
+      if (triedUrls.contains(s.videoUrl)) continue;
+      candidates.add(i);
+    }
+
+    // Zero where the label carries no resolution — "Server 1", "Auto", a host
+    // name. Those compare equal to each other and keep the backend's order,
+    // which is the only thing known about them.
+    int height(int i) =>
+        sources[i].height ??
+        VideoOptionGroups.resolutionOf(sources[i].quality) ??
+        0;
+
+    final avoid = avoidCodec?.toLowerCase();
+    String? server;
+    int? target;
+    int rank(int i) {
+      final s = sources[i];
+      if (avoid != null && s.codec?.toLowerCase() == avoid) return 4;
+      if (rememberedQuality != null && s.quality == rememberedQuality) return 0;
+      if (target != null &&
+          height(i) == target &&
+          VideoOptionGroups.serverOf(s.quality) == server) {
+        return 1;
+      }
+      if (s.isDefault) return 2;
+      return 3;
+    }
+
+    int compare(int a, int b) {
+      final byRank = rank(a).compareTo(rank(b));
+      if (byRank != 0) return byRank;
+      final byHeight = height(b).compareTo(height(a));
+      // Stable at the end: equal rank and equal resolution keep backend order.
+      return byHeight != 0 ? byHeight : a.compareTo(b);
+    }
+
+    candidates.sort(compare);
+    // The preference picks a height on the server that would have played
+    // anyway. Across servers it would trade a provider's adaptive default for
+    // some other host's fixed file, which is a server choice, not a quality one.
+    if (preferredHeight != QualityPreference.auto && candidates.isNotEmpty) {
+      server = VideoOptionGroups.serverOf(sources[candidates.first].quality);
+      target = QualityPreference.pick([
+        for (final i in candidates)
+          if (VideoOptionGroups.serverOf(sources[i].quality) == server)
+            height(i),
+      ], preferredHeight);
+      if (target != null) candidates.sort(compare);
+    }
+    return candidates;
+  }
+
+  /// The next mirror to try, or null when every one has been tried.
+  ///
+  /// Null is the ONLY thing that should reach an error screen. Before this,
+  /// one failed attempt ended the walk with untried mirrors still in the list.
+  int? next() {
+    final list = ordered();
+    return list.isEmpty ? null : list.first;
+  }
+
+  /// The mirror to START on, which is never "none" when sources exist.
+  ///
+  /// [next] is the walk: strict, and null means the ladder is exhausted, which
+  /// is what an error screen waits for. The first pick is a different question.
+  /// The picker this replaced ended in `return 0` — play SOMETHING — and that
+  /// last resort matters: with no index the player falls back to the resolve's
+  /// top-level url, `_currentQuality` stays null, and a null quality means a
+  /// null server, which made the Quality panel list every mirror across every
+  /// host. Pressing Quality then showed servers.
+  ///
+  /// So: the ranked choice when there is one, else the first source, else null
+  /// only when there genuinely are none.
+  int? initialPick() => next() ?? (sources.isEmpty ? null : 0);
+
+  /// The remembered quality for a title, or null. Here rather than at the call
+  /// sites so the two that consult it and the two that never did all read one
+  /// implementation.
+  static String? rememberedQualityFor(
+    TitlePrefsStore prefs, {
+    required String provider,
+    required String contentUrl,
+  }) {
+    final value = prefs.qualityFor(provider, contentUrl);
+    return (value != null && value.isNotEmpty) ? value : null;
+  }
+}

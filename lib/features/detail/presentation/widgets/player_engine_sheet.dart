@@ -11,22 +11,22 @@ import 'package:soplay/core/theme/app_theme.dart';
 /// Icon shown for each backend. Shared with Settings → Player so the row a
 /// user taps in the sheet is visually the same row they see in settings.
 IconData playerEngineIcon(PlayerEngine engine) => switch (engine) {
-      PlayerEngine.native => Icons.play_circle_outline_rounded,
-      PlayerEngine.mediaKit => Icons.graphic_eq_rounded,
-      PlayerEngine.external => Icons.open_in_new_rounded,
-    };
+  PlayerEngine.native => Icons.play_circle_outline_rounded,
+  PlayerEngine.mediaKit => Icons.graphic_eq_rounded,
+  PlayerEngine.external => Icons.open_in_new_rounded,
+};
 
 String playerEngineTitleKey(PlayerEngine engine) => switch (engine) {
-      PlayerEngine.native => 'profile.player_engine_native',
-      PlayerEngine.mediaKit => 'profile.player_engine_media_kit',
-      PlayerEngine.external => 'profile.player_engine_external',
-    };
+  PlayerEngine.native => 'profile.player_engine_native',
+  PlayerEngine.mediaKit => 'profile.player_engine_media_kit',
+  PlayerEngine.external => 'profile.player_engine_external',
+};
 
 String playerEngineDescKey(PlayerEngine engine) => switch (engine) {
-      PlayerEngine.native => 'profile.player_engine_native_desc',
-      PlayerEngine.mediaKit => 'profile.player_engine_media_kit_desc',
-      PlayerEngine.external => 'profile.player_engine_external_desc',
-    };
+  PlayerEngine.native => 'profile.player_engine_native_desc',
+  PlayerEngine.mediaKit => 'profile.player_engine_media_kit_desc',
+  PlayerEngine.external => 'profile.player_engine_external_desc',
+};
 
 /// Asks which backend should decode the video that is about to start.
 ///
@@ -44,6 +44,25 @@ String playerEngineDescKey(PlayerEngine engine) => switch (engine) {
 /// Returns false when the user dismissed the sheet without choosing, so the
 /// caller can back out of playback instead of starting with an engine the user
 /// never confirmed.
+/// Asks for the engine BEFORE the player is opened, when the setting is on.
+///
+/// ## Why this is not inside the player
+///
+/// It used to be, and the sheet then arrived over a player that was already on
+/// screen with nothing decoded — a black rectangle with a question on top,
+/// which reads as the video having failed rather than as a choice being asked
+/// for. Dismissing it then had to close a page the user had just opened.
+///
+/// Asked here, the question is part of pressing Play: answer it and the player
+/// opens on the engine you chose; dismiss it and nothing happened.
+///
+/// Returns false when the user backed out, and the caller must not navigate.
+Future<bool> confirmPlayerEngine(BuildContext context) async {
+  if (!canChoosePlayerEngine) return true;
+  if (!getIt<HiveService>().askEngineOnPlay) return true;
+  return showPlayerEngineSheet(context);
+}
+
 Future<bool> showPlayerEngineSheet(BuildContext context) async {
   if (!canChoosePlayerEngine) return true;
   final hive = getIt<HiveService>();
@@ -115,8 +134,11 @@ Future<bool> showPlayerEngineSheet(BuildContext context) async {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.info_outline_rounded,
-                          color: AppColors.textHint, size: 14),
+                      const Icon(
+                        Icons.info_outline_rounded,
+                        color: AppColors.textHint,
+                        size: 14,
+                      ),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -133,9 +155,10 @@ Future<bool> showPlayerEngineSheet(BuildContext context) async {
                 ),
               const SizedBox(height: 6),
               InkWell(
+                borderRadius: BorderRadius.circular(12),
                 onTap: () => setSheetState(() => dontAskAgain = !dontAskAgain),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 8, 18, 8),
+                  padding: const EdgeInsetsDirectional.fromSTEB(14, 8, 18, 8),
                   child: Row(
                     children: [
                       Checkbox(
@@ -144,8 +167,7 @@ Future<bool> showPlayerEngineSheet(BuildContext context) async {
                             setSheetState(() => dontAskAgain = v ?? false),
                         activeColor: AppColors.primary,
                         side: const BorderSide(color: Colors.white38),
-                        materialTapTargetSize:
-                            MaterialTapTargetSize.shrinkWrap,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         visualDensity: VisualDensity.compact,
                       ),
                       const SizedBox(width: 4),

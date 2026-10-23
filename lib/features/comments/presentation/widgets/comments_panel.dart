@@ -43,6 +43,16 @@ class _CommentsViewState extends State<_CommentsView> {
   String? _editId;
   String _initialText = '';
 
+  /// What was dispatched and has not been confirmed yet.
+  ///
+  /// The compose box used to clear the moment Send was pressed — before the
+  /// request had even been issued, because this panel only adds an event and
+  /// returns. When the write then failed, a snackbar said so over an empty
+  /// box, and a comment somebody had spent a minute writing was simply gone.
+  /// Held here until the bloc reports the write landed, and put back if it
+  /// did not.
+  _PendingWrite? _pending;
+
   void _startReply(CommentEntity c) {
     setState(() {
       _replyTo = c.id;
@@ -72,12 +82,35 @@ class _CommentsViewState extends State<_CommentsView> {
 
   Future<void> _submit(String text) async {
     final bloc = context.read<CommentsBloc>();
+    // The whole composing context, not only the text: an edit that failed has
+    // to come back as an edit of the same comment, and a reply as a reply to
+    // the same person. Restoring the words into a box that had forgotten what
+    // they were for would post them as a new top-level comment.
+    _pending = _PendingWrite(
+      text: text,
+      editId: _editId,
+      replyTo: _replyTo,
+      replyToName: _replyToName,
+    );
     if (_editId != null) {
       bloc.add(CommentsEdit(id: _editId!, text: text));
     } else {
       bloc.add(CommentsCreate(text: text, parentId: _replyTo));
     }
     _cancel();
+  }
+
+  /// Puts an unsent comment back in the box.
+  void _restorePending() {
+    final pending = _pending;
+    if (pending == null) return;
+    _pending = null;
+    setState(() {
+      _initialText = pending.text;
+      _editId = pending.editId;
+      _replyTo = pending.replyTo;
+      _replyToName = pending.replyToName;
+    });
   }
 
   Widget _buildList(
@@ -126,56 +159,82 @@ class _CommentsViewState extends State<_CommentsView> {
         ),
       );
     }
-    return ListView(
+    // Built on demand rather than all at once.
+    //
+    // `ListView(children: [...])` constructs every child widget before the
+    // list decides which of them to lay out — so a title with three hundred
+    // comments built three hundred comment trees, each with its own replies,
+    // on the frame the tab opened. Layout was already lazy; construction was
+    // not, and this is the one list on the detail page that grows without
+    // bound as somebody presses "show more".
+    //
+    // Index 0 is the count header and the last index is the load-more button,
+    // so the item count carries both.
+    final hasMore = state.hasMore;
+    final itemCount = 1 + state.items.length + (hasMore ? 1 : 0);
+
+    return ListView.builder(
       padding: const EdgeInsets.only(bottom: 8),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: Row(
-            children: [
-              Text(
-                state.total == 1
-                    ? 'comments.count_one'.tr()
-                    : 'comments.count_other'.tr(args: ['${state.total}']),
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(
+              children: [
+                Text(
+                  state.total == 1
+                      ? 'comments.count_one'.tr()
+                      : 'comments.count_other'.tr(args: ['${state.total}']),
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
-        for (final c in state.items)
-          _CommentTree(
-            comment: c,
-            replies: state.repliesByParent[c.id] ?? const [],
-            repliesLoading: state.repliesLoading.contains(c.id),
-            expanded: state.expandedIds.contains(c.id),
-            currentUserId: currentUserId,
-            canInteract: loggedIn,
-            onLike: () => bloc.add(CommentsToggleLike(c.id)),
-            onReply: () => _startReply(c),
-            onEdit: () => _startEdit(c),
-            onDelete: () => _confirmDelete(c),
-            onToggle: () => bloc.add(CommentsToggleReplies(c.id)),
-            onReplyLike: (id) => bloc.add(CommentsToggleLike(id)),
-            onReplyEdit: _startEdit,
-            onReplyDelete: _confirmDelete,
-          ),
-        if (state.hasMore)
-          Padding(
+              ],
+            ),
+          );
+        }
+
+        if (hasMore && index == itemCount - 1) {
+          return Padding(
             padding: const EdgeInsets.only(top: 8, bottom: 16),
             child: TextButton(
               onPressed: state.loadingMore
                   ? null
                   : () => bloc.add(const CommentsLoadMore()),
-              child: Text(state.loadingMore
-                  ? 'general.loading'.tr()
-                  : 'comments.show_more'.tr()),
+              child: Text(
+                state.loadingMore
+                    ? 'general.loading'.tr()
+                    : 'comments.show_more'.tr(),
+              ),
             ),
-          ),
-      ],
+          );
+        }
+
+        final c = state.items[index - 1];
+        return _CommentTree(
+          // Keyed by the comment, not by position: pressing "show more"
+          // appends, and an unkeyed builder would rebuild every tree's state
+          // — a half-typed reply among them — against a shifted index.
+          key: ValueKey(c.id),
+          comment: c,
+          replies: state.repliesByParent[c.id] ?? const [],
+          repliesLoading: state.repliesLoading.contains(c.id),
+          expanded: state.expandedIds.contains(c.id),
+          currentUserId: currentUserId,
+          canInteract: loggedIn,
+          onLike: () => bloc.add(CommentsToggleLike(c.id)),
+          onReply: () => _startReply(c),
+          onEdit: () => _startEdit(c),
+          onDelete: () => _confirmDelete(c),
+          onToggle: () => bloc.add(CommentsToggleReplies(c.id)),
+          onReplyLike: (id) => bloc.add(CommentsToggleLike(id)),
+          onReplyEdit: _startEdit,
+          onReplyDelete: _confirmDelete,
+        );
+      },
     );
   }
 
@@ -215,15 +274,25 @@ class _CommentsViewState extends State<_CommentsView> {
   @override
   Widget build(BuildContext context) {
     return BlocConsumer<CommentsBloc, CommentsState>(
-      listenWhen: (a, b) => a.error != b.error && b.error != null,
+      // Also on `submitting`, because that edge is how a write is known to have
+      // landed — which is when the held draft can safely be let go of.
+      listenWhen: (a, b) =>
+          (a.error != b.error && b.error != null) || a.submitting != b.submitting,
       listener: (context, state) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(state.error ?? ''),
-            backgroundColor: AppColors.surface,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        if (state.error != null && state.error!.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(state.error!),
+              backgroundColor: AppColors.surface,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          // The snackbar is the only thing that used to happen here, over an
+          // empty box.
+          _restorePending();
+        } else if (!state.submitting) {
+          _pending = null;
+        }
       },
       builder: (context, state) {
         final bloc = context.read<CommentsBloc>();
@@ -311,6 +380,7 @@ class _SignInPrompt extends StatelessWidget {
 
 class _CommentTree extends StatelessWidget {
   const _CommentTree({
+    super.key,
     required this.comment,
     required this.replies,
     required this.repliesLoading,
@@ -359,7 +429,7 @@ class _CommentTree extends StatelessWidget {
         ),
         if (expanded)
           Padding(
-            padding: const EdgeInsets.only(left: 46),
+            padding: const EdgeInsetsDirectional.only(start: 46),
             child: Column(
               children: [
                 if (repliesLoading && replies.isEmpty)
@@ -394,4 +464,19 @@ class _CommentTree extends StatelessWidget {
       ],
     );
   }
+}
+
+/// A comment handed to the bloc whose outcome is not known yet.
+class _PendingWrite {
+  const _PendingWrite({
+    required this.text,
+    required this.editId,
+    required this.replyTo,
+    required this.replyToName,
+  });
+
+  final String text;
+  final String? editId;
+  final String? replyTo;
+  final String? replyToName;
 }

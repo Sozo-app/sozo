@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:soplay/core/constants/app_constants.dart';
+import 'package:soplay/core/storage/profile_scope.dart';
 import 'package:soplay/features/my_list/data/models/favorite_model.dart';
 import 'package:soplay/features/my_list/domain/entities/favorite_entity.dart';
 
 class MyListLocalDataSource {
   final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
-  Box get _box => Hive.box(AppConstants.favoritesBox);
+  Box get _box => Hive.box(ProfileScope.box(AppConstants.favoritesBox));
 
   String _key(String provider, String contentUrl) => '$provider::$contentUrl';
 
@@ -114,6 +115,22 @@ class MyListLocalDataSource {
   /// unconditionally, and My List refreshes on every bump — so a refresh wrote
   /// the same rows back, bumped, and refreshed again. The loop ran as fast as
   /// the network allowed until the server answered 429.
+
+  /// Drops the whole local cache without recording anything to sync.
+  ///
+  /// For sign-out. These rows came down from the account and go back up on the
+  /// next sign-in (see MyListRepositoryImpl, which upserts the server list),
+  /// so nothing is lost — but leaving them means the next person to open the
+  /// app sees the previous account's saved titles.
+  ///
+  /// Deliberately not a delete-per-row: a row removed the ordinary way is
+  /// queued as a change to push, and pushing a delete for every saved title
+  /// would empty the account rather than the device.
+  Future<void> clearLocalOnly() async {
+    await _box.clear();
+    revision.value++;
+  }
+
   Future<void> upsertAll(Iterable<FavoriteEntity> items) async {
     var changed = false;
     for (final e in items) {

@@ -200,7 +200,7 @@ class _ProviderTestTile extends StatelessWidget {
         color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(12),
       ),
-      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      padding: const EdgeInsetsDirectional.fromSTEB(14, 12, 8, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -284,7 +284,7 @@ class _StepRow extends StatelessWidget {
     };
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4, right: 6),
+      padding: const EdgeInsetsDirectional.only(bottom: 4, end: 6),
       child: Row(
         children: [
           Icon(icon, size: 15, color: colour),
@@ -293,6 +293,10 @@ class _StepRow extends StatelessWidget {
             width: 86,
             child: Text(
               _labels[step.stage]!.tr(),
+              // The column is fixed so the stage names line up; without this a
+              // longer translation wraps and the row grows by a line.
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
           ),

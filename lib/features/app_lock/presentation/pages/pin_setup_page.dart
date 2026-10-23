@@ -138,7 +138,7 @@ class _LengthOption extends StatelessWidget {
                 children: List.generate(
                   length,
                   (i) => Container(
-                    margin: const EdgeInsets.only(right: 6),
+                    margin: const EdgeInsetsDirectional.only(end: 6),
                     width: 10,
                     height: 10,
                     decoration: BoxDecoration(
@@ -222,7 +222,7 @@ class _EnterNew extends StatelessWidget {
             height: 22,
             child: state.errorMessage != null
                 ? Text(
-                    state.errorMessage!.tr(),
+                    state.errorMessage!.tr(args: state.errorArgs),
                     style: const TextStyle(
                       color: AppColors.error,
                       fontSize: 13,
@@ -277,7 +277,7 @@ class _VerifyForChange extends StatelessWidget {
             height: 22,
             child: state.errorMessage != null
                 ? Text(
-                    state.errorMessage!.tr(),
+                    state.errorMessage!.tr(args: state.errorArgs),
                     style: const TextStyle(
                       color: AppColors.error,
                       fontSize: 13,

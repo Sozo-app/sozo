@@ -1,7 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:adaptive_platform_ui/adaptive_platform_ui.dart' show PlatformInfo;
+import 'package:adaptive_platform_ui/adaptive_platform_ui.dart'
+    show PlatformInfo;
 import 'package:flutter/services.dart';
 
 /// Resolved once at startup by [initTvPlatform]. Never mutated afterwards.
@@ -9,6 +10,10 @@ import 'package:flutter/services.dart';
 /// Defaults to `false` so every read before (or without) resolution takes the
 /// phone/desktop path the app ships today.
 bool _isTv = false;
+bool _isAndroidEmulator = false;
+
+/// Emulator GPU surfaces can report dimensions without displaying video.
+bool get isAndroidEmulator => _isAndroidEmulator;
 bool _tvResolved = false;
 
 const MethodChannel _platformChannel = MethodChannel('soplay/platform');
@@ -37,6 +42,12 @@ Future<void> initTvPlatform() async {
   } catch (_) {
     _isTv = false;
   }
+  try {
+    _isAndroidEmulator =
+        await _platformChannel.invokeMethod<bool>('isEmulator') ?? false;
+  } catch (_) {
+    _isAndroidEmulator = false;
+  }
 }
 
 /// Test-only override. Production code must go through [initTvPlatform].
@@ -62,6 +73,15 @@ bool get usesFlutterGlass =>
 
 bool get isDesktopPlatform =>
     !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+/// True on EVERY Android build, television included — unlike [isMobilePlatform],
+/// which deliberately excludes leanback. Always pair it with the surrounding
+/// `!isTvPlatform` branch, or an Android-only affordance comes back on a TV that
+/// removed it on purpose (player_page.controls.dart drops PiP, the touch lock
+/// and orientation lock there).
+bool get isAndroidPlatform => !kIsWeb && Platform.isAndroid;
+
+bool get isIosPlatform => !kIsWeb && Platform.isIOS;
 
 // Android TV reports Platform.isAndroid, but it is not a phone: the liquid-glass
 // bottom nav and its shader pre-warm are phone affordances that are wrong on a

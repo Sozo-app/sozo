@@ -1,29 +1,30 @@
+import 'dart:async';
+import 'dart:ui' as ui;
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
-import 'package:soplay/core/storage/hive_service.dart';
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
-import 'package:soplay/features/auth/data/services/google_auth_service.dart';
-import 'package:soplay/features/auth/presentation/bloc/auth_bloc.dart';
-import 'package:soplay/features/auth/presentation/bloc/auth_event.dart';
-import 'package:soplay/features/auth/presentation/bloc/auth_state.dart';
+import 'package:soplay/core/widgets/app_buttons.dart';
 import 'package:soplay/features/auth/presentation/widgets/auth_widgets.dart';
 import 'package:soplay/features/onboarding/data/onboarding_posters.dart';
+import 'package:soplay/features/onboarding/presentation/controllers/onboarding_controller.dart';
+import 'package:soplay/features/onboarding/presentation/onboarding_navigation.dart';
 import 'package:soplay/features/onboarding/presentation/widgets/anime_ribbons.dart';
+import 'package:soplay/features/onboarding/presentation/widgets/onboarding_focus_button.dart';
 import 'package:soplay/features/onboarding/presentation/widgets/tv_showcase.dart';
 import 'package:soplay/features/onboarding/presentation/widgets/poster_wall.dart';
 
-/// The signed-out landing screen.
+/// The first screen of a new install: three slides on what Sozo is, and the
+/// way in.
 ///
 /// Each slide brings its own backdrop rather than re-colouring one: films fall
 /// in columns, anime slides across in shelves, and the third names what the app
 /// does besides play a file. Three slides over one background would just be
 /// three captions.
-///
-/// The sign-in options sit under all of it the whole time, so nobody has to
-/// page through the story to reach them.
 class OnboardingPage extends StatefulWidget {
   const OnboardingPage({super.key});
 
@@ -33,180 +34,170 @@ class OnboardingPage extends StatefulWidget {
 
 class _OnboardingPageState extends State<OnboardingPage> {
   static const _slides = 3;
+  static const _autoAdvance = Duration(seconds: 6);
 
   final _pageController = PageController();
-  int _page = 0;
-  bool _googlePending = false;
+  // Read by the dots and the key handler only. A setState here rebuilt the
+  // whole intro — header, pager, both visible slides, buttons — on the frame
+  // a swipe crossed halfway, and laid the pager out again mid-drag.
+  final _page = ValueNotifier<int>(0);
+  bool _leaving = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    getIt<OnboardingController>().ensureFirstRun();
+    // A remote has nothing to swipe with, so on a television the story
+    // turns its own pages.
+    if (isTvPlatform) {
+      _timer = Timer.periodic(_autoAdvance, (_) => _turn(1, wrap: true));
+    }
+  }
 
   @override
   void dispose() {
+    _timer?.cancel();
     _pageController.dispose();
+    _page.dispose();
     super.dispose();
   }
 
-  /// Marked on the way out rather than on entry: a first launch killed halfway
-  /// through should still get the introduction next time.
-  Future<void> _leave(String route) async {
-    await getIt<HiveService>().markOnboardingSeen();
-    if (!mounted) return;
-    context.go(route);
-  }
-
-  void _continueWithGoogle() {
-    setState(() => _googlePending = true);
-    context.read<AuthBloc>().add(const AuthGoogleRequested());
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return BlocListener<AuthBloc, AuthState>(
-      listener: (context, state) {
-        if (state is AuthLoaded) {
-          _leave('/main');
-        } else if (state is AuthError) {
-          setState(() => _googlePending = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(state.message),
-              backgroundColor: AppColors.error,
-            ),
-          );
-        } else if (state is AuthInitial) {
-          setState(() => _googlePending = false);
-        }
-      },
-      child: Scaffold(
-        backgroundColor: AppColors.background,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            _Backdrops(controller: _pageController, page: _page),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  // The last two stops are the page background arriving — the
-                  // third used to be the literal #181818, which under AMOLED
-                  // left the poster fading into grey and then jumping to black.
-                  colors: [
-                    const Color(0xB3000000),
-                    const Color(0x33000000),
-                    AppColors.background.withValues(alpha: 0.949),
-                    AppColors.background,
-                  ],
-                  stops: const [0, 0.28, 0.62, 0.8],
-                ),
-              ),
-            ),
-            SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    // Sits clear of the status bar rather than tucked against
-                    // it — over artwork the two collide and both stop reading.
-                    padding: const EdgeInsets.fromLTRB(20, 18, 16, 0),
-                    child: Row(
-                      children: [
-                        Text(
-                          'app_name'.tr().toUpperCase(),
-                          style: TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 3,
-                          ),
-                        ),
-                        const Spacer(),
-                        _SkipChip(onTap: () => _leave('/main')),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: PageView.builder(
-                      controller: _pageController,
-                      itemCount: _slides,
-                      onPageChanged: (i) => setState(() => _page = i),
-                      itemBuilder: (context, i) =>
-                          _Slide(index: i, controller: _pageController),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _Dots(count: _slides, active: _page),
-                  const SizedBox(height: 26),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                    child: BlocBuilder<AuthBloc, AuthState>(
-                      builder: (context, state) {
-                        final loading = state is AuthLoading;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (GoogleAuthService.isSupported) ...[
-                              GoogleAuthButton(
-                                loading: loading && _googlePending,
-                                onPressed: loading ? null : _continueWithGoogle,
-                              ),
-                              const SizedBox(height: 10),
-                            ],
-                            AuthPrimaryButton(
-                              label: 'onboarding.continue_with_email'.tr(),
-                              onPressed: loading
-                                  ? null
-                                  : () => _leave('/register'),
-                            ),
-                            AuthSwitchPrompt(
-                              text: 'auth.already_have_account'.tr(),
-                              action: 'auth.sign_in'.tr(),
-                              onTap: () => _leave('/login'),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+  void _turn(int by, {bool wrap = false}) {
+    if (!_pageController.hasClients) return;
+    var to = _page.value + by;
+    if (wrap) to %= _slides;
+    if (to < 0 || to >= _slides) return;
+    _pageController.animateToPage(
+      to,
+      duration: const Duration(milliseconds: 600),
+      curve: const Cubic(0.05, 0.7, 0.1, 1.0),
     );
   }
-}
 
-/// Skip, made to look like a control rather than a stray word on a poster.
-class _SkipChip extends StatelessWidget {
-  const _SkipChip({required this.onTap});
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final rtl = Directionality.of(context) == ui.TextDirection.rtl;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _turn(rtl ? -1 : 1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _turn(rtl ? 1 : -1);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
-  final VoidCallback onTap;
+  Future<void> _start() async {
+    if (_leaving) return;
+    _leaving = true;
+    await onboardingNext(context);
+    _leaving = false;
+  }
+
+  Future<void> _skip() async {
+    if (_leaving) return;
+    _leaving = true;
+    await finishOnboarding(context);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.45),
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
+    return PopScope(
+      canPop: true,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Focus(
+          onKeyEvent: _onKey,
+          child: Stack(
+            fit: StackFit.expand,
             children: [
-              Text(
-                'onboarding.skip'.tr(),
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+              _Backdrops(controller: _pageController, page: _page.value),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    // The last two stops are the page background arriving — a
+                    // literal grey there showed as a band under AMOLED.
+                    colors: [
+                      const Color(0xB3000000),
+                      const Color(0x33000000),
+                      AppColors.background.withValues(alpha: 0.949),
+                      AppColors.background,
+                    ],
+                    stops: const [0, 0.28, 0.62, 0.8],
+                  ),
                 ),
               ),
-              const SizedBox(width: 2),
-              const Icon(
-                Icons.chevron_right_rounded,
-                size: 18,
-                color: AppColors.textPrimary,
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) => SingleChildScrollView(
+                    child: SizedBox(
+                      height: constraints.maxHeight.clamp(
+                        460 +
+                            (MediaQuery.textScalerOf(context).scale(14) - 14) *
+                                28,
+                        double.infinity,
+                      ),
+                      child: Column(
+                        children: [
+                          OnboardingHeader(onSkip: _skip),
+                          Expanded(
+                            child: PageView.builder(
+                              controller: _pageController,
+                              itemCount: _slides,
+                              onPageChanged: (i) => _page.value = i,
+                              itemBuilder: (context, i) =>
+                                  _Slide(index: i, controller: _pageController),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          ValueListenableBuilder<int>(
+                            valueListenable: _page,
+                            builder: (context, active, _) =>
+                                _Dots(count: _slides, active: active),
+                          ),
+                          const SizedBox(height: 26),
+                          Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 480),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  20,
+                                  0,
+                                  20,
+                                  8,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    OnboardingFocusButton(
+                                      autofocus: isTvPlatform,
+                                      child: AppPrimaryButton(
+                                        label: 'onboarding.get_started'.tr(),
+                                        icon: Icons.arrow_forward_rounded,
+                                        onPressed: _start,
+                                      ),
+                                    ),
+                                    AuthSwitchPrompt(
+                                      text: 'auth.already_have_account'.tr(),
+                                      action: 'auth.sign_in'.tr(),
+                                      onTap: () => context.push('/login'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
@@ -216,16 +207,115 @@ class _SkipChip extends StatelessWidget {
   }
 }
 
+class OnboardingHeader extends StatelessWidget {
+  const OnboardingHeader({super.key, required this.onSkip});
+
+  final VoidCallback onSkip;
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery(
+      // This single-line brand bar must stay stable; the page copy and buttons
+      // below still use the user's full text scale.
+      data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+      child: Padding(
+        // Keeps both controls on their own edges, clear of the status bar.
+        padding: const EdgeInsetsDirectional.fromSTEB(20, 12, 12, 0),
+        child: Row(
+          children: [
+            Text(
+              'SOZO',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 2,
+                height: 1,
+              ),
+            ),
+            const Spacer(),
+            _SkipChip(onTap: onSkip),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A quiet secondary action anchored to the top-right of the intro.
+class _SkipChip extends StatelessWidget {
+  const _SkipChip({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        foregroundColor: AppColors.textPrimary,
+        minimumSize: const Size(0, 44),
+        padding: const EdgeInsetsDirectional.fromSTEB(12, 8, 4, 8),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'onboarding.skip'.tr(),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 2),
+          const Icon(Icons.chevron_right_rounded, size: 18),
+        ],
+      ),
+    );
+  }
+}
+
 /// Cross-fades the three backdrops against the swipe itself, so the artwork
 /// changes with the finger rather than snapping when the page settles.
-class _Backdrops extends StatelessWidget {
+class _Backdrops extends StatefulWidget {
   const _Backdrops({required this.controller, required this.page});
 
   final PageController controller;
   final int page;
 
   @override
+  State<_Backdrops> createState() => _BackdropsState();
+}
+
+class _BackdropsState extends State<_Backdrops> {
+  // Each wall starts and stops its own clock from these. A TickerMode did it
+  // before, but every Image under one depends on it, so each flip re-resolved
+  // a hundred-odd posters on the first and last frame of a swipe; and a muted
+  // ticker's clock keeps counting, so a wall jumped ahead when it settled.
+  final _running = [for (var i = 0; i < 3; i++) ValueNotifier(false)];
+
+  // Built once: a swipe frame rebuilds the fade and the scale around them,
+  // never the walls themselves.
+  late final List<Widget> _walls = [
+    // The page's scrim already fades them into the background.
+    PosterWall(
+      posters: kMoviePosters,
+      fadeBottom: false,
+      running: _running[0],
+    ),
+    AnimeRibbons(fadeBottom: false, running: _running[1]),
+    TvShowcase(running: _running[2]),
+  ];
+
+  @override
+  void dispose() {
+    for (final r in _running) {
+      r.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
@@ -233,34 +323,70 @@ class _Backdrops extends StatelessWidget {
         // truth available then.
         final position =
             controller.hasClients && controller.position.haveDimensions
-            ? controller.page ?? page.toDouble()
-            : page.toDouble();
+            ? controller.page ?? widget.page.toDouble()
+            : widget.page.toDouble();
+
+        final opacities = backdropOpacities(position);
+        // Mid-swipe the walls hold still: the frame then only has the
+        // crossfade to draw, not two moving walls under it as well.
+        final settled = (position - position.roundToDouble()).abs() < 0.001;
+        for (var i = 0; i < 3; i++) {
+          // Only starts or stops controllers; nothing listening rebuilds.
+          _running[i].value = settled && opacities[i] > 0.001;
+        }
 
         return Stack(
           fit: StackFit.expand,
           children: [
+            // All three stay mounted, unpainted at zero opacity: mounting one
+            // on the first frame of a drag built a whole wall inside it.
             for (var i = 0; i < 3; i++)
-              if (1 - (position - i).abs() > 0.01)
-                Opacity(
-                  key: ValueKey(i),
-                  opacity: (1 - (position - i).abs()).clamp(0.0, 1.0),
-                  // Eases forward as it takes focus — a straight cross-fade
-                  // between two full-screen walls reads as a glitch.
-                  // Built only while it is on screen: the mosaic plays a
-                  // one-shot entrance, and creating it up front would spend it
-                  // behind two other slides.
-                  child: Transform.scale(
-                    scale: 1 + (position - i).abs() * 0.06,
-                    child: switch (i) {
-                      0 => const PosterWall(posters: kMoviePosters),
-                      1 => const AnimeRibbons(),
-                      _ => const TvShowcase(),
-                    },
-                  ),
-                ),
+              _Backdrop(
+                key: ValueKey(i),
+                opacity: opacities[i],
+                distance: (position - i).abs().clamp(0.0, 1.0),
+                child: _walls[i],
+              ),
           ],
         );
       },
+    );
+  }
+}
+
+/// How opaque each of the three backdrops is at a pager [position]. The
+/// settled one stays fully opaque underneath and the next fades in over it,
+/// so a swipe never dips through the dark page behind them.
+@visibleForTesting
+List<double> backdropOpacities(double position) {
+  final under = position.floor().clamp(0, 2);
+  final over = (position - under).clamp(0.0, 1.0);
+  return [
+    for (var i = 0; i < 3; i++)
+      i == under ? 1.0 : (i == under + 1 ? over : 0.0),
+  ];
+}
+
+class _Backdrop extends StatelessWidget {
+  const _Backdrop({
+    super.key,
+    required this.opacity,
+    required this.distance,
+    required this.child,
+  });
+
+  final double opacity;
+  final double distance;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: opacity,
+      child: RepaintBoundary(
+        // Eases forward as it takes focus.
+        child: Transform.scale(scale: 1 + distance * 0.06, child: child),
+      ),
     );
   }
 }
@@ -303,35 +429,44 @@ class _SlideBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      // Bottom-aligned inside a full-height page: the pager owns the whole
-      // area so a drag anywhere on the artwork turns the slide, and the copy
-      // still sits where it did.
-      padding: const EdgeInsets.fromLTRB(28, 0, 28, 4),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          Text(
-            'onboarding.slide_${index + 1}_title'.tr(),
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 26,
-              fontWeight: FontWeight.w800,
-              height: 1.2,
-            ),
+    // Bottom-aligned inside a full-height page: the pager owns the whole area
+    // so a drag anywhere on the artwork turns the slide, and the copy still
+    // sits where it did. Scrolls rather than overflows under very large text.
+    return LayoutBuilder(
+      builder: (context, box) => SingleChildScrollView(
+        primary: false,
+        physics: const ClampingScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(28, 0, 28, 4),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: (box.maxHeight - 4).clamp(0.0, double.infinity),
           ),
-          const SizedBox(height: 12),
-          Text(
-            'onboarding.slide_${index + 1}_body'.tr(),
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 14.5,
-              height: 1.45,
-            ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text(
+                'onboarding.slide_${index + 1}_title'.tr(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
+                  height: 1.2,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'onboarding.slide_${index + 1}_body'.tr(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14.5,
+                  height: 1.45,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

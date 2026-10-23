@@ -145,10 +145,17 @@ class _ControlsScrim extends StatelessWidget {
 }
 
 class _LoadingOverlay extends StatelessWidget {
-  const _LoadingOverlay({required this.stage, required this.title});
+  const _LoadingOverlay({
+    required this.stage,
+    required this.title,
+    this.serverSwitch,
+  });
 
   final _LoadingStage stage;
   final String title;
+
+  /// Non-null only while moving between mirrors, which gets its own screen.
+  final ServerSwitch? serverSwitch;
 
   String get _label {
     switch (stage) {
@@ -179,6 +186,9 @@ class _LoadingOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final switching = serverSwitch;
+    if (switching != null) return _ServerSwitchOverlay(switch_: switching);
+
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -248,9 +258,31 @@ class _LoadingOverlay extends StatelessWidget {
 }
 
 class _IconButton extends StatelessWidget {
-  const _IconButton({required this.icon, required this.onTap, this.color});
+  const _IconButton({
+    required this.icon,
+    required this.onTap,
+    this.onLongPress,
+    this.color,
+    this.enabled = true,
+  });
   final IconData icon;
   final VoidCallback onTap;
+
+  /// The long way round, for a control whose tap is a shortcut.
+  ///
+  /// Speed and aspect ratio both used to open a full sheet over the video for
+  /// what is, nine times out of ten, "one step up". The tap now takes that step
+  /// and says so in a toast; this is how the full list is still reached when
+  /// somebody wants to jump straight to 2x.
+  final VoidCallback? onLongPress;
+
+  /// Dimmed and inert rather than absent.
+  ///
+  /// Previous on the first episode and Next on the last are the cases. A button
+  /// that vanishes shifts every other button under the finger that was aiming
+  /// at one of them, and it tells the viewer nothing about why. A dim one says
+  /// "this exists, not here".
+  final bool enabled;
 
   /// When set, tints the icon (and gives a subtle matching background) — used
   /// to show an "active" state, e.g. the Watch Party button while in a party.
@@ -258,24 +290,55 @@ class _IconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 0.45, matching _CenterIconButton — though not for its reason. The centre
+    // cluster sits where the controls scrim has already faded to nothing, so
+    // its disc is all the contrast it gets. These sit inside the scrim and
+    // still needed it: a bar button is a 20pt white glyph against whatever
+    // frame is behind it, and on a bright shot 0.35 left it reading as a
+    // smudge. Raised for legibility, not because the scrim is absent.
+    final fill = color != null
+        ? color!.withValues(alpha: 0.22)
+        : Colors.black.withValues(alpha: 0.45);
+    final tint = (color ?? Colors.white).withValues(
+      alpha: enabled ? 1.0 : 0.38,
+    );
+
+    // The disc stays 38 and the TAP TARGET is 44 — Apple's minimum, and near
+    // Material's 48. It used to be 38 both ways, which is under every
+    // platform floor, and it is the mechanical half of "the controls are
+    // annoying": people were missing them.
+    //
+    // This costs no width. The bar spaced these 38pt discs 6pt apart, so the
+    // pitch was already 44; the gap simply moves inside the button as
+    // transparent padding. Callers therefore drop their SizedBox(width: 6) —
+    // keeping both would double the spacing.
     return _tvRing(
       circle: true,
-      Material(
-        color: color != null
-            ? color!.withValues(alpha: 0.22)
-            : Colors.black.withValues(alpha: 0.35),
-        shape: const CircleBorder(),
-        child: InkWell(
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          child: SizedBox(
-            width: 38,
-            height: 38,
-            child: Icon(
-              icon,
-              color: color ?? Colors.white,
-              size: 18,
-              shadows: _kControlShadow,
+      SizedBox(
+        width: 44,
+        height: 44,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            onLongPress: enabled ? onLongPress : null,
+            customBorder: const CircleBorder(),
+            child: Center(
+              child: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(color: fill, shape: BoxShape.circle),
+                // 20 inside a 38pt disc. It was 18, which left 10pt of empty
+                // disc a side and read as a small mark in a large circle —
+                // half of why these looked flimsy over video.
+                child: Icon(
+                  icon,
+                  color: tint,
+                  size: 20,
+                  shadows: _kControlShadow,
+                ),
+              ),
             ),
           ),
         ),
@@ -298,8 +361,8 @@ class _DesktopVolumeControl extends StatelessWidget {
   IconData get _icon => volume <= 0.001
       ? Icons.volume_off_rounded
       : volume < 0.5
-          ? Icons.volume_down_rounded
-          : Icons.volume_up_rounded;
+      ? Icons.volume_down_rounded
+      : Icons.volume_up_rounded;
 
   @override
   Widget build(BuildContext context) {
@@ -349,35 +412,37 @@ class _LangPill extends StatelessWidget {
     return _tvRing(
       radius: 20,
       Material(
-      color: Colors.black.withValues(alpha: 0.35),
-      shape: const StadiumBorder(),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const StadiumBorder(),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.translate_rounded,
-                color: Colors.white,
-                size: 14,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: const TextStyle(
+        // The same 0.45 disc its _IconButton neighbours wear; at 0.35 it was
+        // the one washed-out shape in the row.
+        color: Colors.black.withValues(alpha: 0.45),
+        shape: const StadiumBorder(),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const StadiumBorder(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.translate_rounded,
                   color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.5,
+                  size: 14,
                 ),
-              ),
-            ],
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -388,12 +453,16 @@ class _CenterIconButton extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.large = false,
+    this.enabled = true,
+    this.label,
     this.busy = false,
     this.focusNode,
   });
   final IconData icon;
   final VoidCallback onTap;
   final bool large;
+  final bool enabled;
+  final String? label;
 
   /// Draws the buffering ring on the button's own rim. Swapping the whole
   /// cluster out for a spinner made the controls jump on every micro-stall and,
@@ -409,37 +478,42 @@ class _CenterIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final size = large ? 72.0 : 52.0;
     final iconSize = large ? 42.0 : 28.0;
-    return _tvRing(
-      circle: true,
-      Material(
-        // These buttons sit at the vertical centre, where the scrim is fully
-        // transparent — 32% black left a white glyph invisible on a bright shot.
-        color: Colors.black.withValues(alpha: 0.45),
-        shape: const CircleBorder(),
-        child: InkWell(
-          onTap: onTap,
-          focusNode: focusNode,
-          customBorder: const CircleBorder(),
-          child: SizedBox(
-            width: size,
-            height: size,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Icon(
-                  icon,
-                  color: Colors.white,
-                  size: iconSize,
-                  shadows: _kControlShadow,
-                ),
-                if (busy)
-                  const Positioned.fill(
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      color: Colors.white70,
-                    ),
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: _tvRing(
+        circle: true,
+        Material(
+          // These buttons sit at the vertical centre, where the scrim is fully
+          // transparent — 32% black left a white glyph invisible on a bright shot.
+          color: Colors.black.withValues(alpha: 0.45),
+          shape: const CircleBorder(),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            focusNode: focusNode,
+            customBorder: const CircleBorder(),
+            child: SizedBox(
+              width: size,
+              height: size,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    color: enabled ? Colors.white : Colors.white38,
+                    size: iconSize,
+                    shadows: _kControlShadow,
                   ),
-              ],
+                  if (busy)
+                    const Positioned.fill(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: Colors.white70,
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -454,43 +528,182 @@ class _BottomTextButton extends StatelessWidget {
     required this.label,
     required this.enabled,
     required this.onTap,
+    this.compact = false,
+    this.compactLabel,
   });
   final IconData icon;
   final String label;
+
+  /// Drawn instead of the icon when [compact], for a button whose value is
+  /// worth more than its glyph.
+  final String? compactLabel;
   final bool enabled;
   final VoidCallback onTap;
+
+  /// Drops the label, leaving a 44pt icon target.
+  ///
+  /// Portrait only. With labels this row wants ~426pt on a phone whose bar is
+  /// ~361pt wide, so its tail — Episodes, and anything after it — sat past the
+  /// right edge of a scroll view with no scrollbar. Without them the whole set
+  /// fits, which is what lets the rarely-used icons live down here instead of
+  /// crowding the title out of the top bar.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final color = enabled ? Colors.white : Colors.white38;
     return Padding(
-      padding: const EdgeInsets.only(right: 10),
+      padding: const EdgeInsetsDirectional.only(end: 10),
       child: _tvRing(
-        radius: 6,
-        InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(6),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: color, size: 18, shadows: _kControlShadow),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  shadows: _kControlShadow,
-                ),
+        radius: 10,
+        // The landscape bottom row — Lock, the speed, the server, the quality —
+        // was drawn as bare white text and a bare white glyph over the frame,
+        // with only a drop shadow to hold it. Against a bright shot that is
+        // exactly the "thin, low quality" the icon buttons beside it had
+        // already been given a disc to fix; this is that disc, shaped for a
+        // label instead of a glyph, at the same 0.45.
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              // 20pt glyph + 12 above and below = a 44pt row, Apple's minimum.
+              // The glyph grew to match _IconButton, so the padding gave back the
+              // 2pt rather than letting the row grow past 44.
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (compact && compactLabel != null)
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(minWidth: 20),
+                      child: Text(
+                        compactLabel!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 12,
+                          height: 1.67,
+                          fontWeight: FontWeight.w800,
+                          shadows: _kControlShadow,
+                        ),
+                      ),
+                    )
+                  else
+                    Icon(
+                      icon,
+                      color: color,
+                      size: 20,
+                      shadows: _kControlShadow,
+                    ),
+                  if (!compact) ...[
+                    const SizedBox(width: 4),
+                    // Cross-faded, because several of these buttons now CYCLE
+                    // rather than open a sheet: the label is the only thing that
+                    // reports what the tap did, and a label that swaps instantly
+                    // reads as a glitch rather than as an answer.
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      switchInCurve: Curves.easeOut,
+                      switchOutCurve: Curves.easeIn,
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: SizeTransition(
+                          axis: Axis.horizontal,
+                          alignment: AlignmentDirectional.centerStart,
+                          sizeFactor: animation,
+                          child: child,
+                        ),
+                      ),
+                      child: Text(
+                        label,
+                        key: ValueKey(label),
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          shadows: _kControlShadow,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
-            ],
+            ),
           ),
         ),
-        ),
       ),
+    );
+  }
+}
+
+/// The row of controls under the seek bar, as the viewer arranged it.
+///
+/// Public, and taking its children rather than building them, for one reason:
+/// it is the piece that keeps breaking, and everything around it —
+/// `_PlayerPageState`, a `VideoPlayerController`, a resolved stream — cannot be
+/// stood up in a test. `PlayerTransportRow` was pulled out of the centre
+/// cluster for the same reason and is tested the same way.
+///
+/// The two groups are drawn as one CENTRED block. They used to sit at opposite
+/// ends of a `spaceBetween`, which on a landscape phone put a hand's width of
+/// empty bar between them and threw the controls to the two corners furthest
+/// from a thumb already resting in the middle of the screen. Adjacent groups
+/// keep the transport/everything-else split readable without spending the whole
+/// width saying it.
+///
+/// Overflow stays a horizontal scroll rather than a `FittedBox`. Shrinking is
+/// what the top bar does and what caps it at six: past a few percent the glyphs
+/// stop being hittable, and a bottom row the viewer can fill from the layout
+/// editor would hit that far sooner. The caller trims this row to what fits in
+/// portrait; the scroll is the floor under that, not the plan.
+class PlayerBottomControlRow extends StatelessWidget {
+  const PlayerBottomControlRow({
+    super.key,
+    required this.leading,
+    required this.trailing,
+  });
+
+  /// The transport group — whatever the viewer left in `bottomLeft`.
+  final List<Widget> leading;
+
+  /// Everything in `bottomRight`, already trimmed to what fits.
+  final List<Widget> trailing;
+
+  /// Separates the two groups when both exist, so centring them together does
+  /// not read as one undifferentiated row of ten buttons.
+  static const double groupGap = 16;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            // The floor is what makes centring possible without giving up the
+            // scroll: at minWidth the row has slack to centre in, while an
+            // unbounded maxWidth still lets a genuinely over-long row scroll
+            // instead of overflowing. Spacer and Expanded cannot be used here
+            // for exactly that reason — they throw on an unbounded main axis.
+            constraints: BoxConstraints(minWidth: box.maxWidth),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ...leading,
+                if (leading.isNotEmpty && trailing.isNotEmpty)
+                  const SizedBox(width: groupGap),
+                ...trailing,
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -512,6 +725,7 @@ class _EpisodeRow extends StatelessWidget {
         ? 'player.episode_n'.tr(args: ['${episode.episode}'])
         : episode.label;
     return InkWell(
+      borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       // On TV the panel opens with the remote already on the episode being
       // watched, so OK re-plays it and up/down walks the list from there.
@@ -558,6 +772,73 @@ class _EpisodeRow extends StatelessWidget {
   }
 }
 
+/// One rendition of the stream that is playing.
+///
+/// Deliberately plainer than [_QualityRow]: a mirror carries warnings worth
+/// reading before you commit to it — a 17 GB Dolby Vision remux from an
+/// interstitial host — while a rendition is the same file at a different
+/// bitrate and there is nothing to warn about.
+class _VideoTrackRow extends StatelessWidget {
+  const _VideoTrackRow({
+    required this.track,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  final PlayerVideoTrack track;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final detail = track.detail;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      autofocus: isTvPlatform && isActive,
+      focusColor: _kTvFocusFill,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    track.isAuto ? 'player.auto'.tr() : track.label,
+                    style: TextStyle(
+                      color: isActive ? AppColors.primary : Colors.white,
+                      fontSize: 14,
+                      fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                  if (track.isAuto || detail != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      // Engine tracks are libmpv's, which picks a rendition
+                      // when the stream opens and does not adapt after.
+                      track.isAuto
+                          ? 'player.auto_quality_desc_mpv'.tr()
+                          : detail!,
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (isActive)
+              Icon(Icons.check_rounded, color: AppColors.primary, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _QualityRow extends StatelessWidget {
   const _QualityRow({
     required this.source,
@@ -571,7 +852,10 @@ class _QualityRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final worst = StreamWarning.worst(source);
+
     return InkWell(
+      borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       autofocus: isTvPlatform && isActive,
       focusColor: _kTvFocusFill,
@@ -588,16 +872,59 @@ class _QualityRow extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                source.quality,
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.white70,
-                  fontSize: 14,
-                  fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    source.quality,
+                    style: TextStyle(
+                      color: isActive ? Colors.white : Colors.white70,
+                      fontSize: 14,
+                      fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
+                    ),
+                  ),
+                  // The worst thing about this stream, in one line.
+                  //
+                  // Only the worst: a 17 GB 4K Dolby Vision Atmos remux
+                  // carries four warnings, and four lines under one row turns
+                  // a picker into a wall nobody reads. Dolby Vision is why it
+                  // will not play; that it is also large is beside the point
+                  // once the picture is green.
+                  if (worst != null) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(
+                          worst.icon,
+                          size: 13,
+                          color: worst.risk == StreamRisk.blocking
+                              ? AppColors.error
+                              : AppColors.rating,
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: Text(
+                            worst.message,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: worst.risk == StreamRisk.blocking
+                                  ? AppColors.error
+                                  : AppColors.textSecondary,
+                              fontSize: 11,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
               ),
             ),
-            if (source.isDefault)
+            if (source.isDefault) ...[
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                 decoration: BoxDecoration(
@@ -605,7 +932,11 @@ class _QualityRow extends StatelessWidget {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  'player.default'.tr(),
+                  // "Default" said which one the app picked; "Recommended"
+                  // says why it is worth keeping — which is the question a
+                  // viewer now has, since the rows below it explain what is
+                  // wrong with the alternatives.
+                  'player.recommended'.tr(),
                   style: TextStyle(
                     color: AppColors.primaryLight,
                     fontSize: 10,
@@ -613,7 +944,112 @@ class _QualityRow extends StatelessWidget {
                   ),
                 ),
               ),
+            ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What is playing, in a corner, live.
+///
+/// Built from [PlaybackReadout], which decides WHAT to say; this only draws it.
+/// Sits above the controls so it stays readable while they fade, and ignores
+/// pointers entirely — it is a readout, not a control, and swallowing taps here
+/// would make a corner of the video stop responding.
+class _PlayerInfoOverlay extends StatelessWidget {
+  const _PlayerInfoOverlay({required this.rows, required this.onClose});
+
+  final List<PlaybackReadoutRow> rows;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 0,
+      right: 0,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 56, right: 12),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 260),
+            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'player.info_title'.tr(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const Spacer(),
+                    // The only interactive part, so the panel can be dismissed
+                    // without hunting back through the settings sheet.
+                    InkWell(
+                      onTap: onClose,
+                      borderRadius: BorderRadius.circular(20),
+                      child: const Padding(
+                        padding: EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.close_rounded,
+                          size: 15,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                for (final row in rows)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 1.5),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 96,
+                          child: Text(
+                            row.labelKey.tr(),
+                            // A backstop. The labels were shortened to fit this
+                            // column, but a future one that is not should lose
+                            // its tail rather than silently add a row of height
+                            // and knock the overlay out of alignment.
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            row.value,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -636,6 +1072,7 @@ class _SettingsTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final disabled = onTap == null;
     return InkWell(
+      borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       focusColor: _kTvFocusFill,
       child: Padding(
@@ -699,15 +1136,28 @@ class _OptionTile extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.subtitle,
+    this.onLongPress,
   });
   final String label;
+
+  /// A second, optional action on the same row. Used for the subtitle picker's
+  /// "also show this one" — a separate list of the same tracks would have been
+  /// the alternative.
+  final VoidCallback? onLongPress;
+
+  /// One line under the label, for options whose names cannot carry the
+  /// trade-off on their own — "High-end GPU" says nothing about what it costs.
+  final String? subtitle;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
+      borderRadius: BorderRadius.circular(12),
       onTap: onTap,
+      onLongPress: onLongPress,
       // Land the remote on the value that is already active, the way the
       // episode and quality rows in the side panel do. Without it the sheet
       // opened with focus on the first row, so "change the subtitle track"
@@ -727,15 +1177,92 @@ class _OptionTile extends StatelessWidget {
               size: 20,
             ),
             const SizedBox(width: 12),
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? Colors.white : Colors.white70,
-                fontSize: 14,
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? Colors.white : Colors.white70,
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                    ),
+                  ),
+                  if (subtitle != null && subtitle!.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11.5,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One typeface option, drawn in the face it selects.
+///
+/// The label is set in its own family on purpose: the names mean very little
+/// on their own — "Serif" tells nobody whether they will be able to read it
+/// over a bright scene — and a chip that shows the shape answers the question
+/// the names cannot.
+class _FontChip extends StatelessWidget {
+  const _FontChip({
+    required this.label,
+    required this.family,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+
+  /// Null for the app's own font, which is what "Default" means: inherit
+  /// rather than name a family.
+  final String? family;
+
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: Material(
+        color: selected
+            ? AppColors.primary
+            : Colors.white.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          autofocus: isTvPlatform && selected,
+          focusColor: _kTvFocusFill,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+            child: Center(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontFamily: family,
+                  color: selected ? Colors.white : Colors.white70,
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -749,7 +1276,7 @@ class _SheetSectionLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 16, 6),
+      padding: const EdgeInsetsDirectional.fromSTEB(20, 14, 16, 6),
       child: Text(
         label.toUpperCase(),
         style: const TextStyle(
@@ -799,6 +1326,7 @@ class _SubtitlePreview extends StatelessWidget {
       style: TextStyle(
         color: color,
         fontSize: style.fontSize,
+        fontFamily: style.font.family,
         fontWeight: weight,
         height: 1.3,
         shadows: shadows,
@@ -814,6 +1342,7 @@ class _SubtitlePreview extends StatelessWidget {
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: style.fontSize,
+              fontFamily: style.font.family,
               fontWeight: weight,
               height: 1.3,
               foreground: strokePaint,
@@ -846,11 +1375,7 @@ class _SubtitlePreview extends StatelessWidget {
           gradient: const LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xFF1F2A44),
-              Color(0xFF2D1B36),
-              Color(0xFF1A1A1A),
-            ],
+            colors: [Color(0xFF1F2A44), Color(0xFF2D1B36), Color(0xFF1A1A1A)],
           ),
         ),
         alignment: Alignment.bottomCenter,
@@ -875,25 +1400,25 @@ class _ColorDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dot = AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: color,
-          border: Border.all(
-            color: selected ? AppColors.primary : Colors.white24,
-            width: selected ? 3 : 1.5,
-          ),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.4),
-                    blurRadius: 8,
-                  ),
-                ]
-              : null,
+      duration: const Duration(milliseconds: 160),
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color,
+        border: Border.all(
+          color: selected ? AppColors.primary : Colors.white24,
+          width: selected ? 3 : 1.5,
         ),
+        boxShadow: selected
+            ? [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.4),
+                  blurRadius: 8,
+                ),
+              ]
+            : null,
+      ),
     );
     if (!isTvPlatform) return GestureDetector(onTap: onTap, child: dot);
     // A bare GestureDetector cannot take focus, which would make the subtitle
@@ -995,20 +1520,42 @@ class _GeneratedFramePreview extends StatefulWidget {
     required this.url,
     required this.headers,
     required this.positionMs,
+    required this.width,
+    required this.height,
+    this.hls = false,
+    this.prefetch = false,
   });
 
   final String url;
   final Map<String, String> headers;
   final int positionMs;
+  final bool hls;
+
+  /// Fetch the next frame in the drag's direction while the decoder is free.
+  /// Worth it for a swipe, which moves a few seconds at a time; the seek bar
+  /// jumps minutes, and a prefetch there only held the decoder from the
+  /// frame actually asked for.
+  final bool prefetch;
+  final double width;
+  final double height;
 
   @override
   State<_GeneratedFramePreview> createState() => _GeneratedFramePreviewState();
 }
 
+/// The frame under the finger, in three steps: the nearest frame already
+/// held (from the background grid or an earlier scrub) at once; the exact one
+/// cross-faded in when it is decoded; a dark skeleton only while there is
+/// nothing at all. A position that cannot be decoded and has nothing near it
+/// draws no box — the time alone is honest, an empty frame is not.
 class _GeneratedFramePreviewState extends State<_GeneratedFramePreview> {
-  static const double _w = 160;
-  static const double _h = 90;
-  Uint8List? _bytes;
+  Uint8List? _exact;
+  Uint8List? _near;
+
+  /// The last frame shown, kept up while a new position has nothing near it,
+  /// so a fast drag does not flash the skeleton between frames.
+  Uint8List? _previous;
+  int? _lastPosition;
   bool _failed = false;
 
   int get _bucket => widget.positionMs ~/ FramePreviewService.bucketMs;
@@ -1016,7 +1563,26 @@ class _GeneratedFramePreviewState extends State<_GeneratedFramePreview> {
   @override
   void initState() {
     super.initState();
-    _fetch();
+    FramePreviewService.frames.addListener(_onFrames);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    FramePreviewService.frames.removeListener(_onFrames);
+    super.dispose();
+  }
+
+  /// A frame landed somewhere — the grid filling in, a prefetch — and this
+  /// card is still waiting on its own: show it if it is near enough now.
+  void _onFrames() {
+    if (!mounted || _exact != null) return;
+    final near = FramePreviewService.nearest(
+      widget.url,
+      widget.positionMs,
+      hls: widget.hls,
+    );
+    if (near != null && !identical(near, _near)) setState(() => _near = near);
   }
 
   @override
@@ -1024,47 +1590,466 @@ class _GeneratedFramePreviewState extends State<_GeneratedFramePreview> {
     super.didUpdateWidget(old);
     if (old.positionMs ~/ FramePreviewService.bucketMs != _bucket ||
         old.url != widget.url) {
-      _fetch();
+      _refresh();
     }
   }
 
+  void _refresh() {
+    // The exact frame belongs to the position the finger left; a grid frame
+    // near the new one is closer to the truth than it is.
+    _previous = _exact ?? _near ?? _previous;
+    _exact = null;
+    // A miss belongs to the position that missed. Kept, one failed frame hid
+    // the picture for the rest of the drag and left only the time.
+    _failed = false;
+    _near = FramePreviewService.nearest(
+      widget.url,
+      widget.positionMs,
+      hls: widget.hls,
+    );
+    _fetch();
+  }
+
   Future<void> _fetch() async {
+    final asked = _bucket;
     final bytes = await FramePreviewService.previewFrame(
-        widget.url, widget.headers, widget.positionMs);
-    if (!mounted) return;
-    if (bytes != null) {
-      setState(() {
-        _bytes = bytes;
+      widget.url,
+      widget.headers,
+      widget.positionMs,
+      hls: widget.hls,
+    );
+    if (!mounted || asked != _bucket) return;
+    setState(() {
+      if (bytes != null) {
+        _exact = bytes;
         _failed = false;
-      });
-    } else if (_bytes == null && !_failed) {
-      setState(() => _failed = true);
+      } else if (_exact == null) {
+        _failed = true;
+      }
+    });
+    // The next frame in the direction of the drag, while the decoder is free.
+    final last = _lastPosition;
+    _lastPosition = widget.positionMs;
+    if (widget.prefetch &&
+        bytes != null &&
+        last != null &&
+        last != widget.positionMs) {
+      FramePreviewService.prefetch(
+        widget.url,
+        widget.positionMs,
+        widget.positionMs > last ? 1 : -1,
+        hls: widget.hls,
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final b = _bytes;
-    if (b != null) {
-      return Image.memory(
-        b,
-        width: _w,
-        height: _h,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        filterQuality: FilterQuality.low,
-      );
+    final own = _exact ?? _near;
+    final shown = own ?? _previous;
+    // No picture at all only when this source is plainly not decoding — not
+    // on one position's miss, which the next usually answers.
+    if (shown == null &&
+        _failed &&
+        FramePreviewService.failing(widget.url, hls: widget.hls)) {
+      return const SizedBox.shrink();
     }
-    if (_failed) return const SizedBox.shrink();
-    return Container(
-      width: _w,
-      height: _h,
-      color: Colors.black54,
-      alignment: Alignment.center,
-      child: const SizedBox(
-        width: 18,
-        height: 18,
-        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return _PreviewFrame(
+      width: widget.width,
+      height: widget.height,
+      child: shown == null
+          ? const _PreviewSkeleton()
+          : AnimatedOpacity(
+              // The last frame, dimmed, while this position has none of its
+              // own yet: a fast drag never goes blank, and a stale picture
+              // does not pass for the right one.
+              opacity: own == null ? 0.55 : 1,
+              duration: const Duration(milliseconds: 140),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 140),
+                child: Image.memory(
+                  shown,
+                  key: ValueKey(identityHashCode(shown)),
+                  width: widget.width,
+                  height: widget.height,
+                  // Decoded at the size it is drawn, not at the stream's own
+                  // resolution.
+                  cacheWidth: (widget.width * dpr).round(),
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  filterQuality: FilterQuality.medium,
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+/// The box every preview frame sits in, whatever it came from.
+class _PreviewFrame extends StatelessWidget {
+  const _PreviewFrame({
+    required this.width,
+    required this.height,
+    required this.child,
+  });
+
+  final double width;
+  final double height;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: width,
+    height: height,
+    decoration: BoxDecoration(
+      color: Colors.black,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x80000000),
+          blurRadius: 16,
+          offset: Offset(0, 6),
+        ),
+      ],
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: child,
+  );
+}
+
+/// What stands in for a frame that has not arrived: a dark surface with a
+/// slow shimmer, never a spinner that reads as the player stalling.
+class _PreviewSkeleton extends StatefulWidget {
+  const _PreviewSkeleton();
+
+  @override
+  State<_PreviewSkeleton> createState() => _PreviewSkeletonState();
+}
+
+class _PreviewSkeletonState extends State<_PreviewSkeleton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _c,
+    builder: (_, _) => DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment(-1.6 + _c.value * 3.2, 0),
+          end: Alignment(-0.6 + _c.value * 3.2, 0),
+          colors: const [
+            Color(0xFF15181C),
+            Color(0xFF262B31),
+            Color(0xFF15181C),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// The scrub preview: the frame, the time under it, how far that is from
+/// where playback is, the opening or ending it falls in, and a caret down to
+/// the thumb. Appears with a short rise, never a pop.
+class _ScrubPreviewCard extends StatelessWidget {
+  const _ScrubPreviewCard({
+    required this.frame,
+    required this.width,
+    required this.time,
+    required this.delta,
+    this.segment,
+    this.caretX,
+  });
+
+  /// The framed image, or null when there is no picture to show.
+  final Widget? frame;
+  final double width;
+  final String time;
+
+  /// "+1:25" / "−0:40" from the current position; empty when negligible.
+  final String delta;
+
+  /// "Opening" or "Ending" when the position falls inside one.
+  final String? segment;
+
+  /// Where the thumb is, measured from the card's left edge; null for no
+  /// caret (the swipe-to-seek overlay, which has no thumb).
+  final double? caretX;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 120),
+      curve: Curves.easeOutCubic,
+      builder: (_, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+          offset: Offset(0, (1 - t) * 6),
+          child: Transform.scale(scale: 0.94 + 0.06 * t, child: child),
+        ),
+      ),
+      child: SizedBox(
+        width: width,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (frame != null)
+              Stack(
+                children: [
+                  frame!,
+                  if (segment != null)
+                    Positioned(left: 6, top: 6, child: _SegmentTag(segment!)),
+                ],
+              ),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    time,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w800,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  if (frame == null && segment != null) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      segment!,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                  if (delta.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      delta,
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (caretX != null)
+              SizedBox(
+                width: width,
+                height: 7,
+                child: CustomPaint(painter: _CaretPainter(caretX!)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Opening" / "Ending" on a preview frame.
+class _SegmentTag extends StatelessWidget {
+  const _SegmentTag(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.72),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 10.5,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.3,
+      ),
+    ),
+  );
+}
+
+/// A small downward triangle at [x], pointing at the thumb.
+class _CaretPainter extends CustomPainter {
+  const _CaretPainter(this.x);
+  final double x;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = x.clamp(8.0, size.width - 8.0);
+    final path = Path()
+      ..moveTo(cx - 6, 0)
+      ..lineTo(cx + 6, 0)
+      ..lineTo(cx, size.height)
+      ..close();
+    canvas.drawPath(
+      path,
+      Paint()..color = Colors.black.withValues(alpha: 0.72),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_CaretPainter old) => old.x != x;
+}
+
+class _ServerSwitchOverlay extends StatelessWidget {
+  const _ServerSwitchOverlay({required this.switch_});
+
+  final ServerSwitch switch_;
+
+  @override
+  Widget build(BuildContext context) {
+    final from = switch_.from;
+
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // The one being left is dimmed rather than hidden: the
+                  // journey is the information, and "from nothing to X" is
+                  // what a first load looks like.
+                  if (from != null) ...[
+                    Opacity(
+                      opacity: 0.35,
+                      child: ServerBadge(name: from, size: 44),
+                    ),
+                    const _SwitchArrow(),
+                  ],
+                  ServerBadge(name: switch_.to, size: 56, selected: true),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text(
+                switch_.to,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'player.switching_server'.tr(),
+                style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 22),
+              SizedBox(
+                width: 148,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: LinearProgressIndicator(
+                    minHeight: 3,
+                    backgroundColor: Colors.white.withValues(alpha: 0.12),
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      // Tinted to the destination, so the bar belongs to the
+                      // server it is waiting on.
+                      ServerBadge.colorFor(switch_.to),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The arrow between the two badges, sliding toward the destination.
+///
+/// A static chevron reads as a separator. The movement is what makes the pair
+/// read as "going from here to there" rather than "these two things".
+class _SwitchArrow extends StatefulWidget {
+  const _SwitchArrow();
+
+  @override
+  State<_SwitchArrow> createState() => _SwitchArrowState();
+}
+
+class _SwitchArrowState extends State<_SwitchArrow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 46,
+      height: 24,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (_, _) => Stack(
+          alignment: Alignment.center,
+          children: [
+            for (var i = 0; i < 3; i++)
+              Positioned(
+                left: 4.0 + i * 13,
+                child: Opacity(
+                  // Each chevron peaks in turn, so the brightness travels
+                  // left to right rather than all three pulsing together.
+                  opacity: (() {
+                    final phase = (_controller.value - i * 0.22) % 1.0;
+                    return phase < 0.5 ? 0.25 + phase * 1.4 : 0.25;
+                  })().clamp(0.15, 0.95),
+                  child: const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white,
+                    size: 18,
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

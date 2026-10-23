@@ -28,7 +28,16 @@ class SearchGenreSelected extends SearchEvent {
 }
 
 class SearchLoadMore extends SearchEvent {
-  const SearchLoadMore();
+  const SearchLoadMore({this.retry = false});
+
+  /// Set only by the footer's retry control.
+  ///
+  /// Scrolling near the bottom fires this event on every frame of the scroll,
+  /// so once a page has failed the bloc has to refuse the automatic ones —
+  /// otherwise a source that is down turns one flick of the thumb into an
+  /// unbounded request loop. The refusal has to be lifted by something, and
+  /// this is it: a deliberate tap, not another pixel of scroll.
+  final bool retry;
 }
 
 /// Re-runs the operation that actually failed, not the genres call.
@@ -48,4 +57,22 @@ class SearchRecentsCleared extends SearchEvent {
 class _SearchRun extends SearchEvent {
   const _SearchRun(this.criteria);
   final SearchCriteria criteria;
+}
+
+/// Suggestions for the query that was being typed have arrived.
+///
+/// Its own event rather than an await inside [SearchQueryChanged] because the
+/// lookup outlives the keystroke that started it: by the time AniList answers,
+/// two more letters have usually been typed, and the bloc has to be able to
+/// drop an answer to a question nobody is asking any more.
+class SearchSuggestionsUpdated extends SearchEvent {
+  const SearchSuggestionsUpdated(this.query, this.suggestions);
+
+  final String query;
+  final List<String> suggestions;
+}
+
+class SearchDiscoverySelected extends SearchEvent {
+  const SearchDiscoverySelected(this.filters);
+  final Map<String, String> filters;
 }

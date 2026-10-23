@@ -1,3 +1,6 @@
+import 'package:soplay/core/trailer/trailer_query.dart';
+import 'record_info.dart';
+
 import 'cast_entity.dart';
 import 'screenshot_entity.dart';
 import 'related_entity.dart';
@@ -22,6 +25,18 @@ class DetailEntity {
   final List<ScreenshotEntity> screenshots;
   final List<RelatedEntity> related;
 
+  /// The YouTube id of this title's trailer, when the provider knows one.
+  ///
+  /// Null for most providers: only the TMDB-backed ones carry it, because
+  /// only they have a catalogue that maps a title to an official video. It is
+  /// the ID rather than a URL because the app resolves it to a direct stream
+  /// and plays it in its own player — a link would mean handing somebody to
+  /// YouTube's app, with its ads and its own fullscreen, from inside ours.
+  final String? trailerYoutubeId;
+
+  /// See [RecordInfo]. Null unless the page was built from a catalogue.
+  final RecordInfo? record;
+
   const DetailEntity({
     required this.provider,
     required this.contentId,
@@ -41,5 +56,20 @@ class DetailEntity {
     required this.isFavorited,
     required this.screenshots,
     required this.related,
+    this.trailerYoutubeId,
+    this.record,
   });
+
+  /// What the trailer lookup has to go on for this title.
+  ///
+  /// Built here so the button and the header preview cannot assemble it
+  /// differently: they ask with one value, and the service answers both from
+  /// one lookup. [trailerYoutubeId] rides along, so a provider that already
+  /// knows the video never triggers a search for its name.
+  TrailerQuery get trailerQuery => TrailerQuery(
+    youtubeId: trailerYoutubeId,
+    title: title,
+    year: year,
+    isSerial: isSerial,
+  );
 }

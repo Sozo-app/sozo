@@ -38,7 +38,8 @@ class PlayerLog {
       _appVersion = 'unknown';
     }
     try {
-      _device = '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+      _device =
+          '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
     } catch (_) {
       _device = 'unknown';
     }
@@ -49,7 +50,7 @@ class PlayerLog {
       if (v == null || v.isEmpty) {
         _context.remove(k);
       } else {
-        _context[k] = v;
+        _context[k] = redact(v);
       }
     });
     _bump();
@@ -61,6 +62,7 @@ class PlayerLog {
   }
 
   void add(String message, {LogLevel level = LogLevel.info}) {
+    message = redact(message);
     if (kDebugMode) {
       final prefix = switch (level) {
         LogLevel.error => '[PLAYER] ✗',
@@ -74,6 +76,49 @@ class PlayerLog {
       _lines.removeFirst();
     }
     _bump();
+  }
+
+  /// Header lines whose values are credentials rather than diagnostics.
+  static final RegExp _secretHeader = RegExp(
+    r'^(\s*)(cookie|set-cookie|authorization|proxy-authorization|x-auth-token|x-api-key)(\s*[:=]\s*).+$',
+    caseSensitive: false,
+    multiLine: true,
+  );
+
+  /// Query parameters that carry a session, a signature or a key.
+  static final RegExp _secretParam = RegExp(
+    r'([?&](?:token|access_token|refresh_token|auth|key|api_key|apikey|sig|signature|jwt|session|sessionid|sid|cf_clearance|password|pass|secret)=)[^&\s#"]+',
+    caseSensitive: false,
+  );
+
+  static final RegExp _bearer = RegExp(r'(Bearer\s+)[A-Za-z0-9\-._~+/]+=*');
+
+  /// Jellyfin's `Authorization: MediaBrowser ..., Token="…"` when it shows up
+  /// inside a logged map rather than on a header line of its own.
+  static final RegExp _mediaBrowserToken = RegExp(
+    r'(Token=")[^"]+',
+    caseSensitive: false,
+  );
+
+  /// Strips credentials out of a line before it is kept.
+  ///
+  /// The log is shareable by design — the viewer's Share and Copy buttons
+  /// exist so a user can paste it into a bug report — and the player writes
+  /// every request header and the full stream URL into it. Those carry the
+  /// provider's cookies (including `cf_clearance`), signed-URL tokens and,
+  /// through the backend, bearer tokens. What a report needs is that a header
+  /// or parameter was there, not its value, so the value is replaced here,
+  /// once, rather than at each of the call sites that log.
+  static String redact(String input) {
+    if (input.isEmpty) return input;
+    return input
+        .replaceAllMapped(
+          _secretHeader,
+          (m) => '${m[1]}${m[2]}${m[3]}<redacted>',
+        )
+        .replaceAllMapped(_secretParam, (m) => '${m[1]}<redacted>')
+        .replaceAllMapped(_bearer, (m) => '${m[1]}<redacted>')
+        .replaceAllMapped(_mediaBrowserToken, (m) => '${m[1]}<redacted>');
   }
 
   void i(String message) => add(message);
@@ -93,9 +138,32 @@ class PlayerLog {
   String stamp(DateTime t) =>
       '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}.${_three(t.millisecond)}';
 
+  /// The context and the newest [maxLines] lines, for a support ticket.
+  ///
+  /// Everything here was redacted as it was logged (see [redact]); the ticket's
+  /// other fields already say which app and device, so no header is repeated.
+  String formatForSupport({int maxLines = 400}) {
+    final b = StringBuffer();
+    if (_context.isNotEmpty) {
+      b.writeln('--- context ---');
+      _context.forEach((k, v) => b.writeln('$k: $v'));
+    }
+    final from = _lines.length > maxLines ? _lines.length - maxLines : 0;
+    b.writeln('--- log (${_lines.length - from} of ${_lines.length}) ---');
+    for (final l in _lines.skip(from)) {
+      final tag = switch (l.level) {
+        LogLevel.error => 'E',
+        LogLevel.warn => 'W',
+        LogLevel.info => 'I',
+      };
+      b.writeln('${stamp(l.time)} $tag  ${l.message}');
+    }
+    return b.toString();
+  }
+
   String formatForShare() {
     final b = StringBuffer()
-      ..writeln('Soplay player logs')
+      ..writeln('Sozo player logs')
       ..writeln('app: ${_appVersion.isEmpty ? 'unknown' : _appVersion}')
       ..writeln('device: ${_device.isEmpty ? 'unknown' : _device}')
       ..writeln('captured: ${DateTime.now().toIso8601String()}');

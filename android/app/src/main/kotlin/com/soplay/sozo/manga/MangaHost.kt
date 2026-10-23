@@ -1,10 +1,14 @@
 package com.soplay.sozo.manga
 
+import com.soplay.sozo.ExtensionFailure
+
 import android.content.Context
 import android.util.Log
+import com.soplay.sozo.extensions.ApkSignature
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SChapterImpl
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaImpl
@@ -14,6 +18,9 @@ import kotlinx.coroutines.Dispatchers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -46,19 +53,34 @@ class MangaHost(private val context: Context) {
         val iconUrl: String,
         val nsfw: Boolean,
         val repoName: String,
+        // The repo's signing-key SHA-256, empty when it declares none.
+        val fingerprint: String = "",
     )
 
-    private val sources = LinkedHashMap<String, SourceMeta>()
+    private val sources = java.util.concurrent.ConcurrentHashMap<String, SourceMeta>()
 
     // Home pages are expensive (network scrape + HTML parse). Cache the built
     // JSON briefly so navigating away and back is instant instead of re-scraping.
     private data class CacheEntry(val ts: Long, val json: String)
-    private val pageCache = HashMap<String, CacheEntry>()
+    private val pageCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry>()
     private val cacheTtlMs = 5 * 60 * 1000L
+
+    /** Refresh only the owning repository when an upstream release URL expires. */
+    var refreshMissingApk: ((String) -> Unit)? = null
+    private val missingApkUrls = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val refreshAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Installed here, without loading it. */
+    fun has(id: String): Boolean = sources.containsKey(id)
 
     fun registerMeta(entry: JSONObject, repoName: String) {
         val id = entry.optString("id")
         if (id.isEmpty()) return
+        val previous = sources[id]
+        if (previous != null && previous.apkUrl != entry.optString("apkUrl")) {
+            MangaRuntime.evictSources(listOf(id), listOf(cachedApkFile(previous).absolutePath))
+            pageCache.clear()
+        }
         sources[id] = SourceMeta(
             id = id,
             name = entry.optString("name"),
@@ -70,6 +92,7 @@ class MangaHost(private val context: Context) {
             iconUrl = entry.optString("iconUrl"),
             nsfw = entry.optBoolean("nsfw", false),
             repoName = repoName,
+            fingerprint = entry.optString("fingerprint"),
         )
     }
 
@@ -89,7 +112,7 @@ class MangaHost(private val context: Context) {
         if (apkUrl.isEmpty()) return
         val affected = sources.values.filter { it.apkUrl == apkUrl }
         if (affected.isEmpty()) return
-        MangaRuntime.evictSources(affected.map { it.id })
+        MangaRuntime.evictSources(affected.map { it.id }, affected.map { cachedApkFile(it).absolutePath })
         for (meta in affected) {
             val f = cachedApkFile(meta)
             if (f.exists()) {
@@ -185,13 +208,26 @@ class MangaHost(private val context: Context) {
         return File(dir, if (remoteName != null) "$base-$remoteName" else "$base.apk")
     }
 
+    // Popular/latest arrive concurrently; they must not overwrite the same .part.apk.
+    @Synchronized
     private fun ensureApk(meta: SourceMeta): File? {
         if (meta.apkUrl.isEmpty()) return null
         val file = cachedApkFile(meta)
         val dir = file.parentFile!!
         if (file.exists() && file.length() > 0) return file
+        if (meta.apkUrl in missingApkUrls &&
+            System.currentTimeMillis() - (refreshAttempts[meta.apkUrl] ?: 0L) < 60_000) return null
 
-        val tmp = File(dir, "${file.name}.part")
+        // `<name>.part.apk`, not `<name>.apk.part`.
+        //
+        // The signature check runs against this temp file, and
+        // getPackageArchiveInfo is documented against apk paths. It does
+        // dispatch on content rather than extension in current AOSP, so the old
+        // name worked — but if it ever returned null here, `fingerprints` would
+        // come back empty and every apk from a repo that declares a fingerprint
+        // would be rejected. That failure mode is indistinguishable from
+        // "nothing works", and the extension costs nothing.
+        val tmp = File(dir, "${file.nameWithoutExtension}.part.apk")
         return try {
             val conn = (URL(meta.apkUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; instanceFollowRedirects = true
@@ -199,6 +235,7 @@ class MangaHost(private val context: Context) {
                 setRequestProperty("User-Agent", UA)
             }
             if (conn.responseCode !in 200..299) {
+                if (conn.responseCode == 404 || conn.responseCode == 410) missingApkUrls.add(meta.apkUrl)
                 Log.e(TAG, "apk ${meta.apkUrl} -> ${conn.responseCode}"); return null
             }
             val expected = conn.contentLengthLong
@@ -216,6 +253,13 @@ class MangaHost(private val context: Context) {
             }
             if (written <= 0) {
                 Log.e(TAG, "apk ${meta.apkUrl} empty"); tmp.delete(); return null
+            }
+            // An apk the repo's own key did not sign never reaches the class
+            // loader — see ApkSignature for why this runs in-process at all.
+            if (!ApkSignature.matches(context, tmp.absolutePath, meta.fingerprint)) {
+                Log.e(TAG, "apk ${meta.apkUrl} signature does not match its repo")
+                tmp.delete()
+                return null
             }
             // Clear read-only in case a previous load marked an older file at this
             // path; renameTo onto a read-only target fails silently otherwise.
@@ -235,20 +279,150 @@ class MangaHost(private val context: Context) {
         }
     }
 
+    @Synchronized
     private fun sourceFor(id: String): CatalogueSource? {
         val meta = sources[id] ?: return null
-        val apk = ensureApk(meta) ?: return null
-        return MangaRuntime.source(context, apk.absolutePath, meta.pkg, meta.id)
+        var current = meta
+        var apk = ensureApk(current)
+        if (apk == null && current.apkUrl in missingApkUrls) {
+            val now = System.currentTimeMillis()
+            val previous = refreshAttempts.putIfAbsent(current.apkUrl, now)
+            if (previous == null || (now - previous > 60_000 &&
+                    refreshAttempts.replace(current.apkUrl, previous, now))) {
+                try {
+                    refreshMissingApk?.invoke(id)
+                    current = sources[id] ?: current
+                    if (current.apkUrl != meta.apkUrl) apk = ensureApk(current)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not refresh expired APK URL for $id: ${e.message}")
+                }
+            } else {
+                current = sources[id] ?: current
+                if (current.apkUrl != meta.apkUrl) apk = ensureApk(current)
+            }
+        }
+        return apk?.let { MangaRuntime.source(context, it.absolutePath, current.pkg, current.id) }
+    }
+
+    /**
+     * A browse or search row.
+     *
+     * [SMangaImpl.title] is `lateinit`, so reading it on an entry whose source
+     * never set one does not give back an empty string — it throws
+     * `UninitializedPropertyAccessException`, out of a getter that looks like a
+     * plain field read. One such entry anywhere in a page took the whole page
+     * with it, and the reader saw a source that simply does not work. The
+     * details path already reads its title this way; every list did not.
+     *
+     * A row with no name falls back to the slug the site itself uses, which is
+     * legible and, more to the point, still opens. Dropping the row instead
+     * would silently shorten a page with no way to tell it had happened.
+     */
+    private fun titleOf(m: SManga): String {
+        val given = try { m.title } catch (_: Throwable) { "" }
+        if (given.isNotBlank()) return given
+        return m.url.trimEnd('/')
+            .substringAfterLast('/')
+            .substringBefore('?')
+            .replace('-', ' ')
+            .replace('_', ' ')
+            .trim()
+            .ifEmpty { "Untitled" }
     }
 
     private fun cardJson(m: SManga, id: String) = JSONObject().apply {
         put("provider", "mn:$id")
         put("externalId", m.url)
-        put("title", m.title)
+        put("title", titleOf(m))
         put("slug", m.url)
         put("contentUrl", m.url)
-        put("thumbnail", m.thumbnail_url)
+        put("thumbnail", try { m.thumbnail_url } catch (_: Throwable) { null })
         put("type", "Manga")
+    }
+
+    /**
+     * A url a browser can open, out of the path an extension stores.
+     *
+     * A Tachiyomi source keeps `SManga.url` and `SChapter.url` as paths
+     * relative to its own `baseUrl` — `/manga/x/chapter-1`, not a link. So the
+     * app held nothing it could hand to a browser, and "open this on the
+     * source's site" could not exist for the whole Mihon ecosystem. The source
+     * object knows the base; this is the only place that has both.
+     *
+     * Empty when there is nothing openable — a source that is not an
+     * [HttpSource], or a path that is already absolute and is kept as it is.
+     * The reader shows the action only when this arrives non-empty, so a source
+     * that cannot answer simply does not offer it.
+     */
+    private fun webUrl(src: Any?, path: String?): String {
+        val p = path?.trim().orEmpty()
+        if (p.isEmpty()) return ""
+        if (p.startsWith("http://") || p.startsWith("https://")) return p
+        val base = (src as? HttpSource)?.baseUrl?.trimEnd('/').orEmpty()
+        if (base.isEmpty()) return ""
+        return if (p.startsWith("/")) base + p else "$base/$p"
+    }
+
+    /**
+     * A chapter's page, asked of the source rather than assembled here.
+     *
+     * `SChapter.url` is not always a path. For some sources it is a KEY: Asura
+     * stores `/series/<slug>` and overrides `getChapterUrl` to build the real
+     * `/comics/<slug>-<rotating-hash>`, because the slug on the site changes.
+     * Joining baseUrl to the stored string gives a 404 on every one of those —
+     * which is exactly what "open on the source's site" was doing.
+     *
+     * Mihon never joins; it asks. [HttpSource.getChapterUrl] has been in the
+     * vendored source all along with nothing calling it, and its default IS the
+     * join, so a source that does not override it loses nothing.
+     *
+     * Falls back three ways — not an HttpSource, the source threw, or it
+     * answered with something that is not http(s). A third-party extension's
+     * return value gets the same scheme guard the join gets.
+     */
+    private fun chapterWebUrl(src: Any?, chapter: SChapter): String {
+        val http = src as? HttpSource ?: return webUrl(src, chapter.url)
+        val asked = try {
+            http.getChapterUrl(chapter).trim()
+        } catch (_: Throwable) {
+            ""
+        }
+        if (asked.startsWith("http://") || asked.startsWith("https://")) return asked
+        // A relative answer is still an answer — resolve it the ordinary way.
+        if (asked.isNotEmpty() && asked != chapter.url) return webUrl(src, asked)
+        return webUrl(src, chapter.url)
+    }
+
+    /**
+     * A chapter's `mediaRef`: its url, plus the memo when it carries one.
+     *
+     * extensions-lib 1.6 lets a source stash per-chapter state in [SChapter.memo]
+     * and read it back in `getPageList`. We rebuild the chapter from its ref, so
+     * a ref that is only a url arrives with an empty memo and those sources find
+     * no pages. Plain url when there is no memo, so every ref already stored in
+     * history and downloads keeps working.
+     */
+    private fun chapterRef(c: eu.kanade.tachiyomi.source.model.SChapter): String {
+        val memo = try { c.memo } catch (_: Throwable) { null }
+        if (memo == null || memo.isEmpty()) return c.url
+        return JSONObject().put("u", c.url).put("m", memo.toString()).toString()
+    }
+
+    /** The inverse of [chapterRef]. */
+    private fun chapterFromRef(ref: String): SChapterImpl {
+        val chapter = SChapterImpl().apply { url = ref; name = "" }
+        if (!ref.startsWith("{")) return chapter
+        return try {
+            val obj = JSONObject(ref)
+            chapter.url = obj.optString("u", ref)
+            val memo = obj.optString("m")
+            if (memo.isNotEmpty()) {
+                chapter.memo = Json.parseToJsonElement(memo).jsonObject
+            }
+            chapter
+        } catch (_: Throwable) {
+            chapter
+        }
     }
 
     private fun newManga(url: String) = SMangaImpl().apply { this.url = url; title = "" }
@@ -334,6 +508,8 @@ class MangaHost(private val context: Context) {
         val src = sourceFor(id)
         val items = JSONArray()
         var hasNext = false
+        var error: String? =
+            if (src == null) (MangaRuntime.lastError ?: "source unavailable: mn:$id") else null
         if (src != null) try {
             val pg = runBlocking {
                 if (data == "latest" && src.supportsLatest) src.getLatestUpdates(page)
@@ -341,10 +517,16 @@ class MangaHost(private val context: Context) {
             }
             for (m in pg.mangas) items.put(cardJson(m, id))
             hasNext = pg.hasNextPage
-        } catch (t: Throwable) { Log.e(TAG, "getSection $id: ${t.message}") }
+        } catch (t: Throwable) {
+            error = "${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, "getSection $id", t)
+        }
         return JSONObject().apply {
             put("provider", "mn:$id"); put("items", items); put("page", page)
             put("totalPages", if (hasNext) page + 1 else page)
+            // Same as searchJson: View all on a broken source showed an empty
+            // grid, which reads as "this source has nothing".
+            if (error != null && items.length() == 0) put("error", error)
         }.toString()
     }
 
@@ -360,7 +542,7 @@ class MangaHost(private val context: Context) {
             hasNext = pg.hasNextPage
         } catch (t: Throwable) {
             error = "${t.javaClass.simpleName}: ${t.message}"
-            Log.e(TAG, "search $id: ${t.message}")
+            Log.e(TAG, "search $id", t)
         }
         return JSONObject().apply {
             put("provider", "mn:$id"); put("items", items)
@@ -408,28 +590,39 @@ class MangaHost(private val context: Context) {
         pageCache[cacheKey]?.let {
             if (System.currentTimeMillis() - it.ts < cacheTtlMs) return it.json
         }
-        val src = sourceFor(id) ?: return "{}"
+        // An empty object told the app nothing, so it said "source unavailable"
+        // over whatever really happened — a failed dex load, a missing apk, an
+        // extension that threw on construction. getMainPageJson has always
+        // reported the reason; this path did not.
+        val src = sourceFor(id)
+            ?: return JSONObject()
+                .put("error", MangaRuntime.lastError ?: "source unavailable: mn:$id")
+                .toString()
         val manga = newManga(url)
-        // details + chapter list are independent → fetch concurrently (was two
-        // sequential network round-trips on every detail open).
-        val (details, chaps) = runBlocking {
-            // Catch INSIDE each async body. With runCatching only around await(),
-            // a throw inside one job (e.g. a source with a malformed details/
-            // chapters JSON) propagates to this scope and CANCELS the sibling
-            // ("Parent job is Cancelling") — so one bad source killed both. Now
-            // each job swallows its own failure and the two are independent.
-            val detJob = async(Dispatchers.IO) {
-                runCatching { src.getMangaDetails(manga) }
-                    .onFailure { Log.e(TAG, "details $id", it) }
-                    .getOrDefault(manga)
+        var failure: String? = null
+        // One call, not two.
+        //
+        // extensions-lib 1.6 folded details and chapters into getMangaUpdate,
+        // and an extension built against it implements ONLY that — asking for
+        // the two halves separately ran our own defaults into a
+        // `mangaDetailsParse` the extension never declared, so every detail page
+        // on a modern source was AbstractMethodError: blank title, no chapters.
+        // The Source default still splits the work for older extensions, so both
+        // generations answer here.
+        val update = runBlocking {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    src.getMangaUpdate(manga, emptyList(), true, true)
+                }
             }
-            val chapJob = async(Dispatchers.IO) {
-                runCatching { src.getChapterList(manga) }
-                    .onFailure { Log.e(TAG, "chapters $id", it) }
-                    .getOrDefault(emptyList<eu.kanade.tachiyomi.source.model.SChapter>())
-            }
-            Pair(detJob.await(), chapJob.await())
+                .onFailure {
+                    Log.e(TAG, "update $id", it)
+                    failure = ExtensionFailure.describe(it)
+                }
+                .getOrNull()
         }
+        val details = update?.manga ?: manga
+        val chaps = update?.chapters ?: emptyList()
 
         // Reading order = oldest→newest so episodeIndex 0 is chapter 1. Sources usually
         // return newest-first; sort by chapter_number when parsed, else reverse source order.
@@ -441,11 +634,14 @@ class MangaHost(private val context: Context) {
             episodes.put(JSONObject().apply {
                 put("episode", i + 1)
                 put("label", c.name.ifEmpty { "Chapter ${i + 1}" })
-                put("mediaRef", c.url)
+                put("mediaRef", chapterRef(c))
+                chapterWebUrl(src, c).takeIf { it.isNotEmpty() }?.let { put("webUrl", it) }
+                // The translating group, for the chapter list's filter.
+                c.scanlator?.trim()?.takeIf { it.isNotEmpty() }?.let { put("scanlator", it) }
             })
         }
 
-        val title = try { details.title } catch (_: Throwable) { "" }
+        val title = titleOf(details)
         val author = try { details.author } catch (_: Throwable) { null }
         val status = statusLabel(try { details.status } catch (_: Throwable) { 0 })
         val desc = buildString {
@@ -468,7 +664,7 @@ class MangaHost(private val context: Context) {
                     if (related.length() >= 20) break
                 }
             }
-        } catch (t: Throwable) { Log.e(TAG, "related $id: ${t.message}") }
+        } catch (t: Throwable) { Log.e(TAG, "related $id", t) }
 
         val json = JSONObject().apply {
             put("provider", "mn:$id")
@@ -485,6 +681,9 @@ class MangaHost(private val context: Context) {
             put("cast", JSONArray())
             put("related", related)
             put("episodes", episodes)
+            // Same reason getMainPageJson carries one: "no chapters" and "the
+            // extension threw" are different problems and used to look alike.
+            failure?.let { put("error", "${sources[id]?.name ?: id}: $it") }
         }.toString()
         if (title.isNotEmpty()) {
             pageCache[cacheKey] = CacheEntry(System.currentTimeMillis(), json)
@@ -498,11 +697,22 @@ class MangaHost(private val context: Context) {
      * the shared [headers] (referer/UA) must be applied to every image request by the reader.
      */
     fun pageListJson(id: String, data: String): String {
-        val src = sourceFor(id) ?: return "{}"
+        // "{}" reads to the app as "no pages", which is the one thing it was
+        // never allowed to mean here — a source that failed to load said the
+        // same as a chapter that is genuinely empty.
+        val src = sourceFor(id)
+            ?: return JSONObject()
+                .put("error", MangaRuntime.lastError ?: "source unavailable: mn:$id")
+                .toString()
         val http = src as? HttpSource
-        val chapter = SChapterImpl().apply { url = data; name = "" }
+        var failure: String? = null
+        val chapter = chapterFromRef(data)
         val pages = try { runBlocking { src.getPageList(chapter) } }
-        catch (t: Throwable) { Log.e(TAG, "pages $id: ${t.message}"); emptyList() }
+        catch (t: Throwable) {
+            Log.e(TAG, "pages $id", t)
+            failure = ExtensionFailure.describe(t)
+            emptyList()
+        }
 
         val pagesArr = JSONArray()
         for (p in pages) {
@@ -510,7 +720,7 @@ class MangaHost(private val context: Context) {
             // Some sources defer the real image url to getImageUrl(page).
             if ((img.isNullOrEmpty()) && p.url.isNotEmpty() && http != null) {
                 img = try { runBlocking { http.getImageUrl(p) } }
-                catch (t: Throwable) { Log.e(TAG, "imageUrl $id: ${t.message}"); null }
+                catch (t: Throwable) { Log.e(TAG, "imageUrl $id", t); null }
             }
             if (img.isNullOrEmpty()) continue
             pagesArr.put(JSONObject().apply {
@@ -518,45 +728,45 @@ class MangaHost(private val context: Context) {
                 put("imageUrl", img)
             })
         }
-        val headers = JSONObject()
-        http?.headers?.forEach { (k, value) -> headers.put(k, value) }
-
-        // Attach the source's cookies for each image host.
+        // Route the images back through the extension.
         //
-        // Page images are fetched by Dart (CachedNetworkImage → Dart's own
-        // HttpClient), NOT by OkHttp, so they never touch the cookie jar that
-        // CloudflareInterceptor writes `cf_clearance` into. On a Cloudflare-gated
-        // source that produced the exact failure the user sees: the chapter's
-        // page list resolves fine (OkHttp, cookies applied) and then every image
-        // 403s. Serialising the cookies here is what lets the Dart side present
-        // the same identity OkHttp would have.
-        //
-        // Per-host rather than one blanket value: image CDNs are frequently on a
-        // different host than the API, and sending one host's cookies to another
-        // is both wrong and a way to leak a session token to a third party.
-        val jar = http?.client?.cookieJar
-        if (jar != null) {
-            val cookieByHost = HashMap<String, String>()
+        // A page url is half a request: the extension finishes it in
+        // `imageRequest` and in its own interceptor chain, which is where
+        // MangaPlus decrypts and where a Cloudflare cookie gets attached.
+        // Fetching the url from Dart skipped all of it, and a chapter rendered
+        // as a column of "Tap to reload". See [MangaImageServer].
+        if (http != null && pagesArr.length() > 0) {
+            val urls = ArrayList<String>(pagesArr.length())
+            for (i in 0 until pagesArr.length()) {
+                pagesArr.optJSONObject(i)?.optString("imageUrl")
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { urls.add(it) }
+            }
+            MangaImageServer.start { sourceId -> sourceFor(sourceId) }
+            val local = MangaImageServer.publish(id, urls)
             for (i in 0 until pagesArr.length()) {
                 val page = pagesArr.optJSONObject(i) ?: continue
-                val url = page.optString("imageUrl").toHttpUrlOrNull() ?: continue
-                val cookie = cookieByHost.getOrPut(url.host) {
-                    try {
-                        jar.loadForRequest(url)
-                            .joinToString("; ") { "${it.name}=${it.value}" }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "cookies ${url.host}: ${t.message}")
-                        ""
-                    }
-                }
-                if (cookie.isNotEmpty()) page.put("cookie", cookie)
+                val original = page.optString("imageUrl")
+                val proxied = local[original] ?: continue
+                // Kept so the reader can cache by the real identity of the
+                // image: the local port changes between runs, the source url
+                // does not.
+                page.put("cacheKey", original)
+                page.put("imageUrl", proxied)
             }
         }
+
+        val headers = JSONObject()
+        http?.headers?.forEach { (k, value) -> headers.put(k, value) }
 
         return JSONObject().apply {
             put("provider", "mn:$id")
             put("headers", headers)
             put("pages", pagesArr)
+            // "0 pages" and "the extension threw" used to look identical.
+            if (pagesArr.length() == 0) {
+                put("error", "${sources[id]?.name ?: id}: ${failure ?: "no pages in this chapter"}")
+            }
         }.toString()
     }
 

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/detail/domain/entities/screenshot_entity.dart';
+import 'package:soplay/features/detail/presentation/widgets/detail_empty_state.dart';
 
 class DetailScreenshotsSection extends StatelessWidget {
   const DetailScreenshotsSection({super.key, required this.screenshots});
@@ -15,28 +16,9 @@ class DetailScreenshotsSection extends StatelessWidget {
         .where((s) => s.thumb.isNotEmpty || s.full.isNotEmpty)
         .toList();
     if (valid.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 40),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.image_outlined,
-                color: AppColors.textHint,
-                size: 48,
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'detail.no_screenshots'.tr(),
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ),
+      return DetailEmptyState(
+        icon: Icons.image_outlined,
+        message: 'detail.no_screenshots'.tr(),
       );
     }
 
@@ -88,7 +70,9 @@ class _ScreenshotCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final url = screenshot.thumb.isNotEmpty ? screenshot.thumb : screenshot.full;
+    final url = screenshot.thumb.isNotEmpty
+        ? screenshot.thumb
+        : screenshot.full;
     return HoverTap(
       onTap: onTap,
       child: Container(
@@ -103,6 +87,9 @@ class _ScreenshotCard extends StatelessWidget {
             CachedNetworkImage(
               imageUrl: url,
               fit: BoxFit.cover,
+              // A tile is at most 320 wide; a still decoded at its full
+              // 1920 held ~15 MB each for a card a sixth of that.
+              memCacheWidth: 720,
               fadeInDuration: const Duration(milliseconds: 180),
               placeholder: (_, _) =>
                   ColoredBox(color: AppColors.surfaceVariant),
@@ -297,9 +284,10 @@ class _ZoomablePhotoState extends State<_ZoomablePhoto>
   }
 
   void _animateTo(Matrix4 target) {
-    _animation = Matrix4Tween(begin: _transform.value, end: target).animate(
-      CurvedAnimation(parent: _animator, curve: Curves.easeOutCubic),
-    );
+    _animation = Matrix4Tween(
+      begin: _transform.value,
+      end: target,
+    ).animate(CurvedAnimation(parent: _animator, curve: Curves.easeOutCubic));
     _animator
       ..stop()
       ..value = 0
@@ -314,12 +302,8 @@ class _ZoomablePhotoState extends State<_ZoomablePhoto>
     }
     final tapPos = _lastTap?.localPosition;
     if (tapPos == null) {
-      final centered = Matrix4.identity()..scaleByDouble(
-        _doubleTapScale,
-        _doubleTapScale,
-        1,
-        1,
-      );
+      final centered = Matrix4.identity()
+        ..scaleByDouble(_doubleTapScale, _doubleTapScale, 1, 1);
       _animateTo(centered);
       return;
     }

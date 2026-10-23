@@ -33,16 +33,21 @@ extension _PlayerCast on _PlayerPageState {
 
     // Only the track being read. A receiver handed the whole list shows a
     // picker on the television, which is a remote control the viewer does not
-    // have in their hand.
-    final active = _subtitles.where((s) => s.isDefault).toList();
+    // have in their hand. The one ON SCREEN, not the provider's default: those
+    // differ whenever the viewer picked another language — or turned subtitles
+    // off, which the television used to switch straight back on.
+    final idx = _activeSubtitleIndex;
+    final active = idx >= 0 && idx < _subtitles.length
+        ? [_subtitles[idx]]
+        : const <SubtitleEntity>[];
     final subtitles = [
       for (final s in active)
-        if (s.file.isNotEmpty)
+        if (CastHandoff.isSendable(s.file))
           CastSubtitle(
             url: s.file,
             label: s.label,
             language: s.label,
-            format: s.file.toLowerCase().contains('.srt') ? 'srt' : 'vtt',
+            format: CastHandoff.subtitleFormatFor(s.file),
           ),
     ];
 
@@ -54,7 +59,10 @@ extension _PlayerCast on _PlayerPageState {
       imageUrl: widget.args.thumbnail,
       // Where they are, not where the episode starts. Casting mid-episode is
       // the common case — the phone was the wrong screen all along.
-      startPosition: _isLive ? null : _controller?.value.position,
+      startPosition: CastHandoff.startPositionFor(
+        isLive: _isLive,
+        position: _controller?.value.position,
+      ),
       subtitles: subtitles,
       defaultSubtitle: subtitles.isEmpty ? null : subtitles.first,
     );
@@ -106,11 +114,28 @@ extension _PlayerCast on _PlayerPageState {
   }
 
   Future<void> _stopCasting() async {
+    // Where the television got to, asked BEFORE the session goes — once it is
+    // stopped there is nobody left to ask. The phone's own controller has sat
+    // paused at the hand-off point all along, so resuming it as it was replayed
+    // everything the room had just watched on the television.
+    Duration? reached;
+    if (!_isLive) {
+      try {
+        reached = await _cast.positionStream?.first.timeout(
+          const Duration(seconds: 2),
+        );
+      } catch (_) {}
+    }
     await _cast.stopCasting();
     if (!mounted) return;
-    // Back to where the television got to, so stopping the cast is not a way
-    // to lose ten minutes.
     setState(() {});
+    final c = _controller;
+    if (reached != null &&
+        reached > Duration.zero &&
+        c != null &&
+        c.value.isInitialized) {
+      await c.seekTo(reached);
+    }
     await _controller?.play();
   }
 
@@ -128,17 +153,6 @@ extension _PlayerCast on _PlayerPageState {
               ),
             )
           : const SizedBox.shrink(),
-    );
-  }
-
-  void _toast(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 3),
-      ),
     );
   }
 }
@@ -243,8 +257,11 @@ class _CastOverlay extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cast_connected_rounded,
-                  size: 44, color: Colors.white70),
+              const Icon(
+                Icons.cast_connected_rounded,
+                size: 44,
+                color: Colors.white70,
+              ),
               const SizedBox(height: 14),
               Text(
                 'player.cast_active'.tr(args: [cast.device?.name ?? 'TV']),
@@ -326,8 +343,8 @@ class _CastButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => IconButton(
-        onPressed: onTap,
-        icon: Icon(icon, size: big ? 40 : 28),
-        color: Colors.white,
-      );
+    onPressed: onTap,
+    icon: Icon(icon, size: big ? 40 : 28),
+    color: Colors.white,
+  );
 }

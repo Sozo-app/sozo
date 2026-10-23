@@ -45,15 +45,27 @@ void main() {
       expect(VideoOptionGroups.servers(labels), ['Vidstream', 'Doodstream']);
     });
 
-    test('a host collects its entries whichever way its labels are written', () {
-      // Doodstream appears once with the quality first and once with it last.
-      expect(VideoOptionGroups.indicesFor(labels, 'Doodstream'), [2, 3]);
-      expect(VideoOptionGroups.qualitiesFor(labels, 'Doodstream'), ['480p', '1080p']);
-    });
+    test(
+      'a host collects its entries whichever way its labels are written',
+      () {
+        // Doodstream appears once with the quality first and once with it last.
+        expect(VideoOptionGroups.indicesFor(labels, 'Doodstream'), [2, 3]);
+        expect(VideoOptionGroups.qualitiesFor(labels, 'Doodstream'), [
+          '480p',
+          '1080p',
+        ]);
+      },
+    );
   });
 
   group('switching host', () {
-    final labels = ['A · 720p', 'A · 1080p', 'B · 360p', 'B · 720p', 'B · 1080p'];
+    final labels = [
+      'A · 720p',
+      'A · 1080p',
+      'B · 360p',
+      'B · 720p',
+      'B · 1080p',
+    ];
 
     test('keeps the resolution you were on', () {
       expect(VideoOptionGroups.switchTo(labels, 0, 'B'), 3);
@@ -66,6 +78,51 @@ void main() {
 
     test('an unknown host leaves the selection alone', () {
       expect(VideoOptionGroups.switchTo(labels, 1, 'C'), 1);
+    });
+  });
+
+  group('extension labels', () {
+    test('a spaced dash and a colon separate the server from the quality', () {
+      expect(VideoOptionGroups.serverOf('Filemoon - 1080p'), 'Filemoon');
+      expect(VideoOptionGroups.qualityOf('Filemoon - 1080p'), '1080p');
+      expect(VideoOptionGroups.serverOf('StreamWish:720p'), 'StreamWish');
+      expect(VideoOptionGroups.resolutionOf('StreamWish:720p'), 720);
+    });
+
+    test('a dash inside a name is not a separator', () {
+      expect(VideoOptionGroups.serverOf('Erai-raws 720p'), 'Erai-raws');
+    });
+
+    test('codecs and years are not resolutions', () {
+      expect(
+        VideoOptionGroups.serverOf('Torrentio x265 · 1080p'),
+        'Torrentio x265',
+      );
+      expect(VideoOptionGroups.resolutionOf('Torrentio x265 · 1080p'), 1080);
+      expect(VideoOptionGroups.resolutionOf('Movie 2024 x264'), isNull);
+    });
+
+    test('named resolutions count', () {
+      expect(VideoOptionGroups.resolutionOf('Vidsrc · 4K'), 2160);
+      expect(VideoOptionGroups.resolutionOf('Server · FHD'), 1080);
+    });
+
+    test('quality words are not servers', () {
+      // A provider's own ladder: one server, not "Auto" plus "Default".
+      expect(VideoOptionGroups.servers(['Auto', '1080p', '720p', '360p']), [
+        'Default',
+      ]);
+      expect(VideoOptionGroups.qualityOf('Auto'), '');
+      // uzmovi-style labels.
+      expect(
+        VideoOptionGroups.servers(['HD 1080p', 'HD 720p', 'Mobile HD', '4K']),
+        ['Default'],
+      );
+      expect(VideoOptionGroups.qualityOf('Mobile HD'), 'Mobile HD');
+      // A tag alone is no host either; beside a name it stays.
+      expect(VideoOptionGroups.serverOf('4K HDR'), 'Default');
+      expect(VideoOptionGroups.serverOf('x265 1080p'), 'Default');
+      expect(VideoOptionGroups.serverOf('Auto · Mp4Upload'), 'Mp4Upload');
     });
   });
 }

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:soplay/core/system/platform_utils.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 
 /// Canonical tab strip. Styling lifted verbatim from the detail page's
@@ -17,7 +20,7 @@ class AppTabBar extends StatefulWidget implements PreferredSizeWidget {
     this.isScrollable = true,
     this.showDivider = true,
     this.background,
-    this.padding = const EdgeInsets.only(left: 8),
+    this.padding = const EdgeInsetsDirectional.only(start: 8),
   });
 
   final List<String> labels;
@@ -26,24 +29,35 @@ class AppTabBar extends StatefulWidget implements PreferredSizeWidget {
   final TabController? controller;
   final bool isScrollable;
   final bool showDivider;
+
   /// Defaults to [AppColors.background]. Nullable rather than defaulted in the
   /// constructor because the palette is a runtime value now, and a default
   /// parameter has to be a compile-time constant.
   final Color? background;
-  final EdgeInsets padding;
 
-  static const double _dividerHeight = 0.5;
+  /// Geometry rather than [EdgeInsets] so a caller — and the default below —
+  /// can express a leading inset that mirrors in Arabic instead of clinging to
+  /// the left edge.
+  final EdgeInsetsGeometry padding;
+
+  /// Public because a pinned sliver header and two skeleton placeholders all
+  /// have to agree with this strip to the pixel, and each of them previously
+  /// carried its own copy of the arithmetic — one of them wrong.
+  static const double dividerHeight = 0.5;
 
   /// TabBar.preferredSize is `_kTabHeight (46) + indicatorWeight`, not
   /// kTextTabBarHeight (48) — using the latter compresses the indicator strip
   /// by 0.5px and shifts every sliver below a pinned header. Keep in sync with
-  /// the [_indicatorWeight] passed to the TabBar below.
-  static const double _indicatorWeight = 2.5;
-  static const double _stripHeight = 46.0 + _indicatorWeight;
+  /// the [indicatorWeight] passed to the TabBar below.
+  static const double indicatorWeight = 2.5;
+
+  /// `TabBar.preferredSize` is `_kTabHeight (46) + indicatorWeight`, NOT
+  /// `kTextTabBarHeight (48)`.
+  static const double stripHeight = 46.0 + indicatorWeight;
 
   @override
   Size get preferredSize => Size.fromHeight(
-    _stripHeight + padding.vertical + (showDivider ? _dividerHeight : 0),
+    stripHeight + padding.vertical + (showDivider ? dividerHeight : 0),
   );
 
   @override
@@ -103,6 +117,24 @@ class _AppTabBarState extends State<AppTabBar>
     if (!_c.indexIsChanging) widget.onChanged?.call(_c.index);
   }
 
+  /// Fires on the tap rather than inside [_onTabChanged], which also runs for
+  /// index changes the app made itself — a deep link landing on the Episodes
+  /// tab should not buzz in the user's hand.
+  ///
+  /// The label and indicator crossfade needs nothing here: [TabBar] drives both
+  /// off the controller's animation, so tapping a tab already interpolates the
+  /// weight and colour between [TextStyle]s over kTabScrollDuration instead of
+  /// cutting.
+  void _onTapped(int index) {
+    // `indexIsChanging` is already true here — TabBar drives the controller
+    // before it calls back — and it is the one flag that distinguishes a tap
+    // that moved the selection from a tap on the tab that was already open,
+    // which should stay silent.
+    if (isMobilePlatform && _c.indexIsChanging) {
+      HapticFeedback.selectionClick();
+    }
+  }
+
   @override
   void dispose() {
     _c.removeListener(_onTabChanged);
@@ -118,18 +150,19 @@ class _AppTabBarState extends State<AppTabBar>
         mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(
-            height: AppTabBar._stripHeight + widget.padding.vertical,
+            height: AppTabBar.stripHeight + widget.padding.vertical,
             child: Padding(
               padding: widget.padding,
               child: TabBar(
                 controller: _c,
+                onTap: _onTapped,
                 isScrollable: widget.isScrollable,
                 // TabAlignment.start asserts under isScrollable: false.
                 tabAlignment: widget.isScrollable
                     ? TabAlignment.start
                     : TabAlignment.fill,
                 indicatorColor: AppColors.primary,
-                indicatorWeight: AppTabBar._indicatorWeight,
+                indicatorWeight: AppTabBar.indicatorWeight,
                 indicatorSize: TabBarIndicatorSize.label,
                 labelColor: AppColors.textPrimary,
                 unselectedLabelColor: AppColors.textHint,
@@ -153,7 +186,7 @@ class _AppTabBarState extends State<AppTabBar>
           ),
           if (widget.showDivider)
             Container(
-              height: AppTabBar._dividerHeight,
+              height: AppTabBar.dividerHeight,
               color: AppColors.divider.withValues(alpha: 0.55),
             ),
         ],

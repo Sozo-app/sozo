@@ -1,6 +1,6 @@
 name: Release → Telegram
 run-name: >-
-  Release ${{ inputs.version != '' && inputs.version || inputs.bump || github.ref_name }}
+  Release ${{ inputs.bump || github.ref_name }}${{ inputs.runner == 'self-hosted' && ' (self-hosted)' || '' }}
 
 # Builds ALL FOUR platforms (Android / Windows / Linux / macOS) when you cut a
 # version, and hands them off. It NEVER touches GitHub Releases at all — you cut
@@ -10,11 +10,14 @@ run-name: >-
 # (No per-push builds: day-to-day master pushes do nothing here.)
 #
 # Delivery:
-#   * Android APKs (per-ABI, each < 50 MB) are sent straight to Telegram.
-#   * All four platforms are uploaded as Actions run artifacts. Desktop
-#     installers exceed Telegram's 50 MB bot limit, so the run is where you grab
-#     them; a Telegram message links the run.
-#   * Nothing is ever written to the Releases tab — that stays 100% manual.
+#   * A GitHub Release is cut automatically, with every artifact renamed to
+#     `Sozo-v<version>-<what it is>` and notes generated from the same version
+#     the builds were stamped with. This used to be manual, which is how three
+#     of the first four releases ended up with no files attached and the fourth
+#     shipped `app-arm64-v8a-release.apk` and a `Sozo-macOS0-…dmg` typo.
+#   * Android APKs (per-ABI, each < 50 MB) are also sent straight to Telegram.
+#   * Everything is uploaded as Actions run artifacts too, as the fallback when
+#     the publish step itself fails.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   DOTENV              contents of the app's .env (it is a pubspec asset — the
@@ -36,16 +39,38 @@ on:
           - patch          # 3.0.2 -> 3.0.3
           - minor          # 3.0.2 -> 3.1.0
           - major          # 3.0.2 -> 4.0.0
-          - build-only     # name unchanged, build number +1
           - none           # build and ship whatever is committed
-      version:
-        description: 'Exact version name, e.g. 3.1.0 (overrides the choice above)'
-        type: string
-        required: false
+      runner:
+        description: 'Where to build'
+        type: choice
+        default: github
+        options:
+          - github         # GitHub-hosted; macOS bills at 10x
+          - self-hosted    # your own Mac — free minutes, and it must be online
       notes:
         description: 'Release notes for the Telegram message'
         type: string
         required: false
+      platforms:
+        description: 'Which platforms to build (macOS runner bills at 10x)'
+        type: choice
+        default: all
+        options:
+          - all            # android + ios + macos + windows + linux
+          - mobile         # android + ios only — skips the desktop builds
+          - android        # android only; no macOS runner is started at all
+      release:
+        description: 'What to do with the GitHub Release'
+        type: choice
+        default: draft
+        options:
+          - draft          # attach the builds, leave it unpublished to write
+          - publish        # publish immediately, as it used to
+          - skip           # build only; artifacts stay on the run
+      announce:
+        description: 'Post the builds to Telegram (off to quietly replace the files of a release that is already out)'
+        type: boolean
+        default: true
   push:
     tags: ['v*']
 
@@ -66,31 +91,118 @@ jobs:
   # platforms ship the same version — resolving it per job would let a push
   # landing mid-run give Android one version and Windows another.
   #
+  # A tag that already has a release was created BY that release.
+  #
+  # A draft does not create its tag; GitHub creates it the moment somebody
+  # presses Publish. That tag push matched `push: tags: v*`, so publishing a
+  # finished draft started the whole release again: every platform rebuilt,
+  # and the publish job then overwrote the hand-written notes with generated
+  # ones. Only a tag with no release behind it (`git tag vX && git push`) is
+  # a request to build.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" = "push" ] && gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "### Skipped: ${TAG} already has a release" >> "$GITHUB_STEP_SUMMARY"
+            echo "This tag was created by publishing that release. Nothing is rebuilt or re-published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # The build number always rises, whatever the name does. It is what Android
   # compares for "is there an update", and what the backend's AppVersion row
   # stores; two releases sharing one build number are invisible to the updater.
   version:
+    # A tag pushed by this workflow must not start it again.
+    #
+    # The bump used to be pushed with a RELEASE_PAT, and unlike GITHUB_TOKEN a
+    # PAT-pushed tag DOES trigger workflows. So every dispatched release was
+    # running twice end to end: two Android builds, two Windows builds and two
+    # macOS runs, and the macOS one bills at ten times the rest. It is pushed
+    # with GITHUB_TOKEN now (see permissions below); this guard stays for the
+    # day a PAT is used again.
+    #
+    # A hand-cut tag (`git tag v1.0.1 && git push`) still builds, which is the
+    # documented way to release without the dispatch form. What is filtered is
+    # only this workflow's own bookkeeping commit, which no human writes.
+    needs: gate
+    if: >-
+      needs.gate.outputs.run == 'true' && (
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message || '', 'chore: '))
     runs-on: ubuntu-latest
+    # The bump commit and its tag are pushed with GITHUB_TOKEN, which is
+    # read-only in this repository unless a job asks for more. Without this the
+    # push was refused with a 403 and every release shipped a version the repo
+    # never recorded. Nothing on master requires a pull request (the ruleset
+    # only forbids deletion and force-pushes), so a writable token is all it
+    # takes — no RELEASE_PAT.
+    permissions:
+      contents: write
     outputs:
       name: ${{ steps.resolve.outputs.name }}
       build: ${{ steps.resolve.outputs.build }}
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.sha.outputs.sha }}
+      # Where each job runs, as JSON so a self-hosted runner can carry several
+      # labels. Windows and Linux are absent on purpose: a Mac cannot build
+      # either, so offering to move them would be offering a build that fails.
+      android_runner: ${{ steps.where.outputs.android }}
+      mac_runner: ${{ steps.where.outputs.mac }}
     steps:
       - uses: actions/checkout@v4
         with:
           # The tag push below needs real history, not a shallow clone.
           fetch-depth: 0
-          # The default GITHUB_TOKEN is not an admin, so the version bump is
-          # rejected by the branch protection on the default branch. A
-          # RELEASE_PAT that belongs to somebody who can push is what gets it in.
+          # GITHUB_TOKEN, writable through the job's permissions above. A
+          # RELEASE_PAT is still honoured if one is ever added, but see the
+          # push step: a PAT-pushed tag re-triggers workflows.
           token: ${{ secrets.RELEASE_PAT || github.token }}
+
+      # Which machines build this release.
+      #
+      # A dispatch can pick the repository's own Mac instead of GitHub's. The
+      # macOS runner bills at ten times the Linux rate and it is the single
+      # largest line on the bill for a full release, so "build it on the Mac in
+      # the corner" is worth one dropdown.
+      #
+      # Resolved once, here, for the same reason the version is: every build job
+      # reads these outputs, so a release cannot end up half on one fleet and
+      # half on the other.
+      - name: Choose runners
+        id: where
+        env:
+          WHERE: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          if [ "${WHERE}" = "self-hosted" ]; then
+            ANDROID='["self-hosted","macOS"]'
+            MAC='["self-hosted","macOS"]'
+          else
+            ANDROID='["ubuntu-latest"]'
+            MAC='["macos-latest"]'
+          fi
+          echo "android=${ANDROID}" >> "$GITHUB_OUTPUT"
+          echo "mac=${MAC}"         >> "$GITHUB_OUTPUT"
+          echo "::notice title=Runners::android=${ANDROID} macos=${MAC} (windows and linux always run on GitHub)"
 
       - name: Resolve version
         id: resolve
         env:
           BUMP: ${{ inputs.bump }}
-          EXPLICIT: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
@@ -120,22 +232,18 @@ jobs:
             MA="${MA:-0}"; MI="${MI:-0}"; PA="${PA:-0}"
             NEW_BUILD="$((BUILD + 1))"
 
-            if [ -n "${EXPLICIT}" ]; then
-              case "${EXPLICIT}" in
-                *[!0-9.]*) echo "::error title=Bad version::'${EXPLICIT}' must be digits and dots only, e.g. 3.1.0"; exit 1 ;;
-              esac
-              NEW_NAME="${EXPLICIT}"
-              BUMPED=yes
-            else
-              case "${BUMP}" in
-                patch)      NEW_NAME="${MA}.${MI}.$((PA + 1))"; BUMPED=yes ;;
-                minor)      NEW_NAME="${MA}.$((MI + 1)).0";     BUMPED=yes ;;
-                major)      NEW_NAME="$((MA + 1)).0.0";         BUMPED=yes ;;
-                build-only) NEW_NAME="${NAME}";                 BUMPED=yes ;;
-                none)       NEW_NAME="${NAME}"; NEW_BUILD="${BUILD}"; BUMPED=no ;;
-                *)          echo "::error title=Unknown bump::'${BUMP}'"; exit 1 ;;
-              esac
-            fi
+            # The version is computed, never typed. There used to be a free-text
+            # field that overrode the choice, and a field that accepts "v1.0.0",
+            # "1.0", " 1.0.0" or a number already released is a field that
+            # publishes one of those. What the next version IS follows from what
+            # is in pubspec.yaml and which part you are raising.
+            case "${BUMP}" in
+              patch) NEW_NAME="${MA}.${MI}.$((PA + 1))"; BUMPED=yes ;;
+              minor) NEW_NAME="${MA}.$((MI + 1)).0";     BUMPED=yes ;;
+              major) NEW_NAME="$((MA + 1)).0.0";         BUMPED=yes ;;
+              none)  NEW_NAME="${NAME}"; NEW_BUILD="${BUILD}"; BUMPED=no ;;
+              *)     echo "::error title=Unknown bump::'${BUMP}'"; exit 1 ;;
+            esac
           fi
 
           echo "name=${NEW_NAME}"   >> "$GITHUB_OUTPUT"
@@ -206,9 +314,10 @@ jobs:
           # no tag.
           # A rejected push must not cancel the release.
           #
-          # The default branch is protected and GITHUB_TOKEN is not an admin, so
-          # without a RELEASE_PAT this push is refused — and refusing to build
-          # because a bookkeeping commit could not land is the wrong trade. The
+          # It can still be refused — master moved on during the run (the push
+          # is not a force-push), or the job's permissions were narrowed — and
+          # refusing to build because a bookkeeping commit could not land is the
+          # wrong trade. The
           # version is already resolved, and the build jobs stamp it in
           # themselves, so the artifacts ship as exactly what this run says.
           # What is lost is the record in git: worth a loud warning, not a stop.
@@ -218,12 +327,12 @@ jobs:
           else
             git tag -d "${TAG}" || true
             echo "pushed=no" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Version bump not committed::The default branch is protected and this run is not an admin, so ${NAME}+${BUILD} was NOT written back to git — this build still ships as ${NAME}+${BUILD}, but the repo still says the old one. Add a RELEASE_PAT secret (fine-grained PAT, Contents: read and write) to close the gap."
+            echo "::warning title=Version bump not committed::The push of ${NAME}+${BUILD} to ${GITHUB_REF_NAME} was refused, so it was NOT written back to git — this build still ships as ${NAME}+${BUILD}, but the repo still says the old one. Commit the version by hand (pubspec.yaml) before the next release."
             {
               echo "### ⚠️ Version bump was not committed"
               echo ""
               echo "These builds ship as **${NAME}+${BUILD}**, but the repository still records the previous version."
-              echo "Add a \`RELEASE_PAT\` secret (fine-grained PAT with **Contents: read and write**) so the bump can land."
+              echo "Set \`version: ${NAME}+${BUILD}\` in pubspec.yaml by hand before the next release, or the next bump starts from the old one."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -245,7 +354,7 @@ jobs:
   # ---------------------------------------------------------------- Android ----
   android:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.version.outputs.android_runner) }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -280,10 +389,37 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # Gradle re-downloads every dependency on a cold runner — several minutes
+      # of it, every release. Ubuntu minutes are the cheap ones, so this buys
+      # wall-clock rather than money; a release that lands sooner is still worth
+      # the four lines.
+      #
+      # GitHub-hosted only, and that condition is not a preference — it is the
+      # fix for a release that failed with every APK already built. A
+      # self-hosted runner keeps ~/.gradle and the Flutter SDK on its own disk
+      # between runs, so there is nothing to warm; what these steps did there
+      # was upload gigabytes back to GitHub over a home connection AFTER the
+      # work was done. In run 34835090440 the build finished at 10:57 and the
+      # job was still packing tarballs eleven minutes later when it was
+      # cancelled — so android went red, publish found no assets, and a good
+      # build was thrown away.
+      #
+      # It also ends a collision: the macOS job caches Flutter under the same
+      # macos-arm64 key, and the two raced — "another job may be creating this
+      # cache" is in the same log.
+      - name: Cache Gradle
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Create .env (declared as a pubspec asset — the build fails without it)
         run: printf '%s' "${{ secrets.DOTENV }}" > .env
       # Restore the release signing key. android/app/key.properties is
@@ -314,6 +450,29 @@ jobs:
       # 50 MB Telegram Bot API document limit.
       - name: Build release APKs
         run: flutter build apk --release --split-per-abi
+      # A universal APK as well, for the GitHub Release only.
+      #
+      # Per-ABI exists because Telegram will not take a document over 50 MB, and
+      # that constraint is real. It is also the wrong thing to put in front of
+      # somebody who has just found the project and does not know what an ABI
+      # is: the download page then asks a question they cannot answer, and the
+      # commonest failure — picking armeabi-v7a on a 64-bit phone, or hitting
+      # "package not compatible" — happens before they have seen the app at all.
+      # The universal build is the answer to "I don't know which one", and the
+      # Releases page has no size limit to stop us offering it.
+      - name: Build universal APK (Releases page only — too large for Telegram)
+        run: flutter build apk --release
+      - name: Stage the universal APK separately
+        run: |
+          set -euo pipefail
+          mkdir -p dist-universal
+          cp build/app/outputs/flutter-apk/app-release.apk dist-universal/
+          ls -lh dist-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sozo-android-universal
+          path: dist-universal/*.apk
+          if-no-files-found: error
       # Fail loudly rather than shipping an APK nobody can update to. A
       # debug-signed build is the exact failure this pipeline had before, and it
       # is invisible until a user tries to install over an existing copy.
@@ -419,7 +578,11 @@ jobs:
   # ---------------------------------------------------------------- Windows ----
   windows:
     needs: version
+    # Desktop is not part of a mobile release. Skipping the job skips the whole
+    # runner, which is the only saving that is ever 100%.
+    if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
     runs-on: windows-latest
+    timeout-minutes: 60
     env:
       # The runner's very new MSVC turns flutter_inappwebview_windows's use of the
       # deprecated <experimental/coroutine> header into a hard error (STL1011).
@@ -463,10 +626,23 @@ jobs:
       - run: flutter --version
       - run: flutter pub get
       - run: flutter build windows --release
+      # /DMyAppVersion, because the .iss cannot read pubspec.yaml. Without it the
+      # installer falls back to its own placeholder and every release would show
+      # up under the same version in Add/Remove Programs.
       - name: Build installer (Inno Setup)
+        shell: pwsh
+        env:
+          NAME: ${{ needs.version.outputs.name }}
         run: |
           choco install innosetup --no-progress -y
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "windows\installer\Sozo.iss"
+          # /D emulates `#define public <name> <value>`, and the value is handed
+          # to the preprocessor as source: a bare 3.0.4 is not something ISPP can
+          # parse, so the version has to arrive already wrapped in literal double
+          # quotes to be unambiguously a string. PowerShell re-quotes arguments on
+          # their way to a native command and would eat those quotes, so --% hands
+          # the rest of the line to ISCC verbatim — which also means the version
+          # has to come in as cmd-style %NAME%, the one expansion --% still does.
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" --% /DMyAppVersion="%NAME%" windows\installer\Sozo.iss
       - name: Also zip the raw build (portable)
         shell: pwsh
         run: |
@@ -483,7 +659,11 @@ jobs:
   # ------------------------------------------------------------------ Linux ----
   linux:
     needs: version
+    # Desktop is not part of a mobile release. Skipping the job skips the whole
+    # runner, which is the only saving that is ever 100%.
+    if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -528,9 +708,32 @@ jobs:
       - run: flutter --version
       - run: flutter pub get
       - run: flutter build linux --release
+      # The bundle on its own is a binary in a folder: no menu entry, no icon,
+      # and nothing claiming the sozo:// scheme, so a Linux user got a strictly
+      # worse app than the Windows and macOS ones from the same release. The
+      # three files from linux/packaging travel with it and install.sh wires
+      # them into the user's session without root — which is the only kind of
+      # install a tarball can honestly offer.
       - name: Package (tar.gz)
         run: |
-          cd build/linux/x64/release/bundle
+          set -euo pipefail
+          BUNDLE=build/linux/x64/release/bundle
+          # Copied one at a time, and only when present. A missing packaging file
+          # costs the desktop integration; it does not make the build unusable,
+          # and under `set -e` a single `cp` of all three would turn that into a
+          # failed release. ::warning:: surfaces it on the run summary instead, so
+          # a file that never got committed is visible rather than fatal.
+          for f in sozo.desktop sozo.png install.sh; do
+            if [ -f "linux/packaging/$f" ]; then
+              cp "linux/packaging/$f" "$BUNDLE/"
+            else
+              echo "::warning::linux/packaging/$f is missing from the checkout — the Linux tarball ships without it."
+            fi
+          done
+          if [ -f "$BUNDLE/install.sh" ]; then
+            chmod +x "$BUNDLE/install.sh"
+          fi
+          cd "$BUNDLE"
           tar -czf "$GITHUB_WORKSPACE/Sozo-Linux-x64.tar.gz" .
       - uses: actions/upload-artifact@v4
         with:
@@ -540,8 +743,16 @@ jobs:
 
   # ------------------------------------------------------------------ macOS ----
   macos:
+    # The expensive one. Started for 'all' and 'mobile' (iOS lives here), and
+    # not at all for an Android-only release. A tag push has no inputs, so the
+    # empty case means everything.
+    if: ${{ inputs.platforms == '' || inputs.platforms != 'android' }}
     needs: version
-    runs-on: macos-latest
+    runs-on: ${{ fromJSON(needs.version.outputs.mac_runner) }}
+    # A self-hosted runner that is offline queues a job for six hours before
+    # GitHub gives up. Ninety minutes is longer than this build has ever taken
+    # and short enough to notice.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -577,7 +788,59 @@ jobs:
         run: printf '%s' "${{ secrets.DOTENV }}" > .env
       - run: flutter --version
       - run: flutter pub get
-      - run: flutter build macos --release
+
+      # The pod install inside `flutter build ios` downloads and unpacks every
+      # dependency's spec repo on a cold runner. Cached, that is the single
+      # biggest saving available on this runner, and this is the runner whose
+      # minutes cost ten times the others'.
+      #
+      # Keyed on the lockfile so a dependency change invalidates it, with a
+      # loose restore-key so an unrelated bump still starts from a warm cache
+      # instead of from nothing.
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'pubspec.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: Build macOS desktop
+        if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
+        run: flutter build macos --release
+
+      # iOS is built on the SAME runner as macOS, deliberately.
+      #
+      # A macOS runner bills at 10x an Ubuntu one — it is by far the most
+      # expensive minute in this workflow. A separate `ios:` job would pay for
+      # a second checkout, a second Flutter SDK install and a second `pub get`
+      # at that rate before compiling a single line, which is several billable
+      # minutes spent re-doing work this runner has already done.
+      #
+      # `--no-codesign` because there is no paid Apple Developer account, the
+      # same reason the macOS build is only ad-hoc signed. The result is an
+      # unsigned .ipa: it cannot go to the App Store or TestFlight, and it is
+      # exactly what AltStore / Sideloadly / TrollStore install. Attempting
+      # `flutter build ipa` instead would need an export-options plist and a
+      # signing identity, and fails on a runner that has neither.
+      - name: Build iOS (unsigned)
+        run: flutter build ios --release --no-codesign
+
+      # An .ipa is a zip with the .app inside a top-level Payload/ directory —
+      # there is no Apple tool needed to make one, and `xcodebuild
+      # -exportArchive` would demand the signing identity we do not have.
+      - name: Package .ipa
+        run: |
+          set -euo pipefail
+          APP=build/ios/iphoneos/Runner.app
+          test -d "$APP" || { echo "::error::$APP was not produced"; exit 1; }
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Sozo-iOS.ipa Payload
+          rm -rf Payload
+          ls -lh Sozo-iOS.ipa
       # No paid Apple Developer cert, so this is NOT notarized. The goal here is
       # a VALID ad-hoc signature: with one, a downloaded app shows the soft
       # "unverified developer" prompt (right-click → Open works). An INVALID
@@ -586,6 +849,7 @@ jobs:
       # mpv dylibs, so we sign inside-out (every Mach-O first, frameworks, then
       # the app last) and then FAIL the build if the signature doesn't verify.
       - name: Ad-hoc codesign (inside-out, must verify)
+        if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
         run: |
           set -euo pipefail
           APP=$(ls -d build/macos/Build/Products/Release/*.app | head -n1)
@@ -608,17 +872,24 @@ jobs:
 
           # Must be valid, else the recipient gets "damaged" — fail loudly.
           codesign --verify --deep --strict --verbose=2 "$APP"
+      # hdiutil, not create-dmg. `brew install create-dmg` resolves and
+      # installs a Homebrew formula on a cold runner, which took a minute or
+      # two of MACOS time — billed at 10x — to produce a prettier window layout
+      # nobody sees for more than a second. hdiutil ships with macOS, needs no
+      # install, and makes the same disk image.
       - name: Create unsigned DMG (with open instructions)
+        if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
         run: |
           set -euo pipefail
-          brew install create-dmg
           APP=$(ls -d build/macos/Build/Products/Release/*.app | head -n1)
 
           # Staging dir so the DMG carries the app + a plain-text "how to open"
-          # note (Gatekeeper still quarantines any un-notarized download).
+          # note (Gatekeeper still quarantines any un-notarized download), and
+          # a symlink to /Applications so dragging still works.
           STAGE="$(mktemp -d)/Sozo"
           mkdir -p "$STAGE"
           cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
           cat > "$STAGE/OCHISH — READ ME.txt" <<'TXT'
           Sozo — macOS'da ochish (Apple imzosi yo'q, bu normal):
 
@@ -633,28 +904,266 @@ jobs:
           Bu bir marta kerak; keyin har doim oddiy ochiladi.
           TXT
 
-          echo "Packaging DMG from $STAGE"
-          create-dmg \
-            --volname "Sozo" \
-            --window-size 560 400 \
-            --icon-size 110 \
-            --app-drop-link 400 185 \
-            --icon "$(basename "$APP")" 150 185 \
-            --no-internet-enable \
-            "Sozo-macOS.dmg" "$STAGE" || \
-          create-dmg --volname "Sozo" "Sozo-macOS.dmg" "$STAGE"
+          hdiutil create -volname Sozo -srcfolder "$STAGE" \
+            -ov -format UDZO Sozo-macOS.dmg
+          ls -lh Sozo-macOS.dmg
       - uses: actions/upload-artifact@v4
+        if: ${{ inputs.platforms == '' || inputs.platforms == 'all' }}
         with:
           name: Sozo-macOS
           path: Sozo-macOS.dmg
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sozo-iOS
+          path: Sozo-iOS.ipa
+          if-no-files-found: error
+
+  # --------------------------------------------------- Publish (Releases) ------
+  # Cuts the GitHub Release, with branded filenames and notes people can read.
+  #
+  # ## Why this job exists
+  #
+  # The Releases tab used to be entirely manual, and it showed. Three of the
+  # four releases carried no files at all, and the one that did shipped Flutter's
+  # raw output names:
+  #
+  #     app-arm64-v8a-release.apk
+  #     Sozo-macOS0-v3.1.0.dmg        ← a typo nobody could fix after the fact
+  #
+  # `app-arm64-v8a-release.apk` tells a visitor nothing: not the app, not the
+  # version, and in a Downloads folder next to three other apps' `app-release`
+  # files, not even which project it came from. It also cannot be verified —
+  # "which build is this?" has no answer once the file has moved.
+  #
+  # Every artifact below is renamed to `Sozo-v<version>-<what it is>` at the one
+  # moment the version is known for certain, and the release body is generated
+  # from the same source. Nothing is typed by hand, so nothing can be typed
+  # wrong.
+  publish:
+    needs: [version, android, windows, linux, macos]
+    # Publish whatever succeeded. A Windows build that failed should not hold
+    # back the Android release people are waiting on — the notes say which
+    # platforms are in the box.
+    #
+    # `release: skip` leaves the builds as run artifacts and touches nothing
+    # public. A tag push has no inputs at all and still publishes: pushing a
+    # version tag is already the deliberate act this dropdown exists to ask
+    # about.
+    if: >-
+      ${{ always() && !cancelled() && needs.version.result == 'success'
+          && (inputs.release || 'publish') != 'skip' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: raw
+
+      - name: Rename everything to Sozo-v<version>-<what it is>
+        id: stage
+        env:
+          V: ${{ needs.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p rel
+
+          # One table, so a new platform is one line rather than a new branch.
+          # Left: how the build job named it. Right: what a person downloading
+          # it should see.
+          copy() {
+            local src="$1" dst="rel/Sozo-v${V}-$2"
+            if [ -f "$src" ]; then
+              cp "$src" "$dst"
+              echo "  $(basename "$src")  →  $(basename "$dst")"
+            fi
+          }
+
+          echo "Staging:"
+          copy raw/sozo-android/app-arm64-v8a-release.apk    "arm64-v8a.apk"
+          copy raw/sozo-android/app-armeabi-v7a-release.apk  "armeabi-v7a.apk"
+          copy raw/sozo-android/app-x86_64-release.apk       "x86_64.apk"
+          copy raw/sozo-android-universal/app-release.apk    "universal.apk"
+
+          # Android TV is the SAME binary — the manifest declares
+          # LEANBACK_LAUNCHER and touchscreen-optional, so there is no separate
+          # build and asserting one would be a lie. It is copied under a TV name
+          # anyway because somebody standing in front of a television needs one
+          # obvious file, not a choice between three ABIs they cannot check.
+          copy raw/sozo-android/app-arm64-v8a-release.apk    "tv-arm64-v8a.apk"
+          copy raw/sozo-android/app-armeabi-v7a-release.apk  "tv-armeabi-v7a.apk"
+
+          copy raw/Sozo-Windows/Sozo-Setup.exe               "Windows-Setup.exe"
+          copy raw/Sozo-Windows/Sozo-Windows-portable.zip    "Windows-portable.zip"
+          copy raw/Sozo-macOS/Sozo-macOS.dmg                 "macOS.dmg"
+          copy raw/Sozo-iOS/Sozo-iOS.ipa                     "iOS.ipa"
+
+          # Linux's archive name varies with the build script; take whatever
+          # tarball the job produced rather than guessing at its spelling.
+          for f in raw/Sozo-Linux/*.tar.gz raw/sozo-linux/*.tar.gz; do
+            [ -f "$f" ] && copy "$f" "Linux-x64.tar.gz"
+          done
+
+          if ! ls rel/* >/dev/null 2>&1; then
+            echo "::error title=Nothing to publish::Every build job failed; no release was cut."
+            exit 1
+          fi
+
+          # Checksums, so a download can be verified and a re-upload can be
+          # told apart from the original.
+          ( cd rel && sha256sum * > "Sozo-v${V}-SHA256SUMS.txt" )
+
+          echo; echo "Release payload:"; ls -lh rel
+
+      - name: Compose the release notes
+        env:
+          V: ${{ needs.version.outputs.name }}
+          BUILD: ${{ needs.version.outputs.build }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          {
+            if [ -n "${NOTES}" ]; then
+              printf '%s\n\n' "${NOTES}"
+            fi
+
+            cat <<'MD'
+          ## ⬇️ Qaysi faylni yuklab olay?
+
+          | Fayl | Kimga |
+          |---|---|
+          | 🟢 **`arm64-v8a.apk`** | Zamonaviy 64-bit Android telefonlar — **ko'pchilikka shu** |
+          | 🟡 `armeabi-v7a.apk` | Eski 32-bit qurilmalar |
+          | 🔵 `universal.apk` | Qaysi birini olishni bilmasangiz — hammasida ishlaydi, faqat kattaroq |
+          | 📺 `tv-arm64-v8a.apk` | Android TV / Google TV / Shield — TV ga sideload qiling |
+          | 🪟 `Windows-Setup.exe` | Windows o'rnatuvchisi |
+          | 🪟 `Windows-portable.zip` | O'rnatmasdan ishlatish |
+          | 🐧 `Linux-x64.tar.gz` | Linux x64 |
+          | 🍎 `macOS.dmg` | macOS (imzosiz — pastga qarang) |
+
+          `SHA256SUMS.txt` — yuklab olingan faylni tekshirish uchun.
+
+          ---
+
+          <details>
+          <summary>🍎 macOS: "damaged / ochilmadi" chiqsa</summary>
+
+          DMG Apple sertifikati bilan imzolanmagan. Terminal'da bir marta:
+
+          ```
+          xattr -dr com.apple.quarantine /Applications/Sozo.app
+          ```
+
+          Yoki Applications'da Sozo.app → o'ng tugma → Open → Open.
+          </details>
+
+          <details>
+          <summary>📺 Android TV haqida</summary>
+
+          TV uchun alohida build yo'q — bu **bir xil APK**. Manifest'da
+          `LEANBACK_LAUNCHER` e'lon qilingan, shuning uchun bitta binary ham
+          telefonda, ham televizorda ishlaydi. `tv-` prefiksi shunchaki
+          televizor oldida turgan odam uchun bitta aniq fayl bo'lsin degani.
+          </details>
+
+          <details>
+          <summary>🐛 Biror narsa ishlamayaptimi?</summary>
+
+          - Manba/provider muammosi → [Manba ishlamayapti](../../issues/new?template=source_not_working.yml)
+          - Ilova xatosi → [Xato haqida xabar](../../issues/new?template=bug_report.yml)
+          - Savol → [Telegram](https://telegram.me/sozoapp) · [Discord](https://discord.gg/n22URhYvMR)
+          </details>
+
+          MD
+
+            printf '\n---\n\n<sub>Build %s · yuklab olingan faylni `SHA256SUMS.txt` bilan tekshirish mumkin.</sub>\n' "${BUILD}"
+          } > RELEASE_NOTES.md
+
+          echo "── notes ──"; cat RELEASE_NOTES.md
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          V: ${{ needs.version.outputs.name }}
+          SHA: ${{ needs.version.outputs.sha }}
+          MODE: ${{ inputs.release || 'publish' }}
+        run: |
+          set -euo pipefail
+          # A draft is the default for a dispatched release: the builds are
+          # attached and named, and the release itself stays invisible until
+          # somebody has written it and pressed Publish. The generated notes
+          # below are a starting point, not the announcement — and a draft
+          # does not create the tag either, so an abandoned draft leaves
+          # nothing behind.
+          # Expanded as ${DRAFT[@]+…} because `set -u` treats an empty array
+          # as unbound in bash 3.2, and this step should not depend on which
+          # bash the runner happens to ship.
+          DRAFT=()
+          if [ "${MODE}" = "draft" ]; then DRAFT=(--draft); fi
+
+          # `--clobber` so re-running a failed publish replaces the assets
+          # rather than erroring on the ones that already uploaded. An existing
+          # release is left at whatever state it already has: re-running must
+          # not publish a draft somebody is still writing, nor un-publish one
+          # that is already out.
+          # Its notes are left alone too: once a release exists, somebody may
+          # have written them, and a re-run must not replace them with the
+          # generated ones.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" rel/* --clobber
+          else
+            # --target, not --verify-tag.
+            #
+            # The version job is allowed to fail to push: when the default
+            # branch is protected and no RELEASE_PAT is set, the bump commit
+            # and its tag are rejected with a 403, the job deletes the local
+            # tag, warns, and lets the run continue — the builds still carry
+            # the right version because they stamp it themselves. Publish then
+            # asked for a tag nobody had created and died on --verify-tag, so
+            # a patch release ended with four good builds and no release.
+            #
+            # --verify-tag was guarding a tag name that is computed and never
+            # typed. The tag is created here instead, at the exact commit the
+            # builds checked out — which the version job already resolves to
+            # something the remote has.
+            gh release create "${TAG}" rel/* \
+              --title "Sozo v${V}" \
+              --notes-file RELEASE_NOTES.md \
+              --target "${SHA}" \
+              ${DRAFT[@]+"${DRAFT[@]}"}
+          fi
+          {
+            if [ "${MODE}" = "draft" ]; then
+              echo "### Draft release — not published"
+              echo ""
+              echo "The builds are attached. Write the notes and press **Publish release**; the \`${TAG}\` tag is created at that point."
+            fi
+            gh release view "${TAG}" --json url --jq .url
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------- Deliver (Telegram) --------
   deliver:
-    needs: [version, android, windows, linux, macos]
+    needs: [version, android, windows, linux, macos, publish]
     # Deliver whatever succeeded, even if one platform's build failed — but not
     # if the run was cancelled.
-    if: ${{ always() && !cancelled() }}
+    #
+    # `version` being SKIPPED is the third case, and it is not a failure worth
+    # announcing: it means this run was started by the workflow's own version
+    # tag and correctly declined to build anything. Without this guard every
+    # release posted a second Telegram message saying nothing was built.
+    #
+    # `announce: false` is for rebuilding a release that is already out — new
+    # files swapped in under the same version, which is not news. A tag push
+    # has no inputs, so it still announces.
+    if: ${{ always() && !cancelled() && needs.version.result != 'skipped' && inputs.announce != false }}
     runs-on: ubuntu-latest
     steps:
       # Not fatal: when every build failed there is nothing to download, and the
@@ -671,7 +1180,7 @@ jobs:
           set -euo pipefail
           mkdir -p out dist
           find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' \
-            -o -name '*.tar.gz' -o -name '*.dmg' \) -exec cp {} out/ \;
+            -o -name '*.tar.gz' -o -name '*.dmg' -o -name '*.ipa' \) -exec cp {} out/ \;
           echo "Collected:"
           ls -lh out || true
 
@@ -682,6 +1191,7 @@ jobs:
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
           VERSION_NAME: ${{ needs.version.outputs.name }}
           VERSION_BUILD: ${{ needs.version.outputs.build }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
           RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           set -uo pipefail
@@ -715,8 +1225,12 @@ jobs:
           fi
           # The version job is the single source of this number, so the message
           # cannot disagree with what is actually inside the APKs.
-          HEAD="$(printf '🎬 Sozo %s (build %s)\n\n🧰 Win/Linux/macOS fayllar shu run da (artifacts):\n%s' \
-                  "${VERSION_NAME}" "${VERSION_BUILD}" "${RUN_URL}")"
+          # The Release page, not the Actions run: a run URL is only visible to
+          # collaborators, so everybody else in the channel got a 404 where the
+          # desktop builds were supposed to be.
+          REL_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          HEAD="$(printf '🎬 Sozo %s (build %s)\n\n📦 Barcha fayllar (Android / Windows / Linux / macOS):\n%s' \
+                  "${VERSION_NAME}" "${VERSION_BUILD}" "${REL_URL}")"
 
           if [ -n "${RELEASE_NOTES}" ]; then
             HEAD="$(printf '%s\n\n📝 %s' "${HEAD}" "${RELEASE_NOTES}")"
@@ -728,7 +1242,7 @@ jobs:
           # Android TV is the SAME APK (the manifest carries LEANBACK_LAUNCHER),
           # so say it in plain terms — otherwise people hunt the run artifacts
           # for a separate "TV build" that was never produced.
-          HEAD="${HEAD}$(printf '\n\n📺 Android TV: alohida build yo'"'"'q — bir xil APK. TV ga app-arm64-v8a-release.apk ni sideload qiling (eski/arzon boks bo'"'"'lsa armeabi-v7a).')"
+          HEAD="${HEAD}$(printf '\n\n📺 Android TV: alohida build yo'"'"'q — bir xil APK, faqat aniq nom bilan. Release sahifasidan Sozo-v%s-tv-arm64-v8a.apk ni oling (eski/arzon boks bo'"'"'lsa tv-armeabi-v7a).' "${VERSION_NAME}")"
 
           # Files too big for the bot are only listed (the run artifacts have them).
           BIG=""

@@ -37,7 +37,9 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage> {
       if (ok == true && mounted) setState(() {});
     } else {
       final confirmed = await _confirmDisable();
-      if (!confirmed) return;
+      // `mounted` as well as the answer: the confirmation is a sheet, and
+      // dismissing it is a moment when the page behind can go with it.
+      if (!confirmed || !mounted) return;
       setState(() => _busy = true);
       await _repo.disable();
       if (mounted) setState(() => _busy = false);
@@ -179,10 +181,7 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage> {
               enabled
                   ? 'app_lock.enabled_hint'.tr()
                   : 'app_lock.disabled_hint'.tr(),
-              style: const TextStyle(
-                color: AppColors.textHint,
-                fontSize: 12,
-              ),
+              style: const TextStyle(color: AppColors.textHint, fontSize: 12),
             ),
           ),
         ],

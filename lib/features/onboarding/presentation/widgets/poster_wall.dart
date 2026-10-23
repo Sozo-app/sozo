@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/onboarding/data/onboarding_posters.dart';
@@ -15,6 +16,8 @@ class PosterWall extends StatefulWidget {
     this.columns = 5,
     this.tilesPerColumn = 11,
     this.fadeTop = false,
+    this.fadeBottom = true,
+    this.running,
   });
 
   final List<String> posters;
@@ -24,6 +27,14 @@ class PosterWall extends StatefulWidget {
   /// Fades the top edge instead of only the bottom — what the auth headers
   /// want, where the wall sits under a top bar.
   final bool fadeTop;
+
+  /// Off where the page already fades the wall into its background: the mask
+  /// is a full-screen offscreen pass on every frame of the drift.
+  final bool fadeBottom;
+
+  /// Starts and stops the drift from outside, as the intro does mid-swipe.
+  /// Null: it drifts whenever animations are on.
+  final ValueListenable<bool>? running;
 
   @override
   State<PosterWall> createState() => _PosterWallState();
@@ -39,10 +50,44 @@ class _PosterWallState extends State<PosterWall>
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: _cycle,
-  )..repeat();
+  );
+  bool _reduced = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.running?.addListener(_sync);
+  }
+
+  @override
+  void didUpdateWidget(PosterWall old) {
+    super.didUpdateWidget(old);
+    if (old.running == widget.running) return;
+    old.running?.removeListener(_sync);
+    widget.running?.addListener(_sync);
+    _sync();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduced = MediaQuery.disableAnimationsOf(context);
+    _sync();
+  }
+
+  // Stopped, not muted: a muted ticker's clock keeps counting, so the wall
+  // jumped ahead by however long it had been held once it was let go.
+  void _sync() {
+    if (_reduced || !(widget.running?.value ?? true)) {
+      _controller.stop();
+    } else if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+  }
 
   @override
   void dispose() {
+    widget.running?.removeListener(_sync);
     _controller.dispose();
     super.dispose();
   }
@@ -68,6 +113,31 @@ class _PosterWallState extends State<PosterWall>
           final tileHeight = tileWidth / _posterRatio;
           final strip = (tileHeight + _gap) * widget.tilesPerColumn;
 
+          final wall = SizedBox(
+            height: constraints.maxHeight,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var c = 0; c < widget.columns; c++) ...[
+                  if (c > 0) const SizedBox(width: _gap),
+                  Expanded(
+                    child: _PosterColumn(
+                      controller: _controller,
+                      posters: _postersFor(c),
+                      speed: _speeds[c % _speeds.length],
+                      strip: strip,
+                      tileHeight: tileHeight,
+                      tileWidth: tileWidth,
+                      // Staggering the start stops every column from
+                      // beginning on the same row of the wall.
+                      phase: c / widget.columns,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+          if (!widget.fadeTop && !widget.fadeBottom) return wall;
           return ShaderMask(
             blendMode: BlendMode.dstIn,
             shaderCallback: (rect) => LinearGradient(
@@ -80,30 +150,7 @@ class _PosterWallState extends State<PosterWall>
               ],
               stops: const [0, 0.35, 1],
             ).createShader(rect),
-            child: SizedBox(
-              height: constraints.maxHeight,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (var c = 0; c < widget.columns; c++) ...[
-                    if (c > 0) const SizedBox(width: _gap),
-                    Expanded(
-                      child: _PosterColumn(
-                        controller: _controller,
-                        posters: _postersFor(c),
-                        speed: _speeds[c % _speeds.length],
-                        strip: strip,
-                        tileHeight: tileHeight,
-                        tileWidth: tileWidth,
-                        // Staggering the start stops every column from
-                        // beginning on the same row of the wall.
-                        phase: c / widget.columns,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
+            child: wall,
           );
         },
       ),
@@ -149,34 +196,38 @@ class _PosterColumn extends StatelessWidget {
               child: child,
             );
           },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var pass = 0; pass < 2; pass++)
-                for (final poster in posters)
-                  Padding(
-                    padding: const EdgeInsets.only(
-                      bottom: _PosterWallState._gap,
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: Image.asset(
-                        poster,
-                        width: tileWidth,
-                        height: tileHeight,
-                        fit: BoxFit.cover,
-                        cacheWidth: (tileWidth * devicePixelRatio).round(),
-                        // The wall is decoration; a missing file must not take
-                        // the sign-in screen down with it.
-                        errorBuilder: (_, _, _) => Container(
+          // Its own layer: each frame moves the recorded strip instead of
+          // re-recording two dozen clipped posters.
+          child: RepaintBoundary(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var pass = 0; pass < 2; pass++)
+                  for (final poster in posters)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        bottom: _PosterWallState._gap,
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: Image.asset(
+                          poster,
                           width: tileWidth,
                           height: tileHeight,
-                          color: AppColors.surface,
+                          fit: BoxFit.cover,
+                          cacheWidth: (tileWidth * devicePixelRatio).round(),
+                          // The wall is decoration; a missing file must not take
+                          // the sign-in screen down with it.
+                          errorBuilder: (_, _, _) => Container(
+                            width: tileWidth,
+                            height: tileHeight,
+                            color: AppColors.surface,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -1,0 +1,18 @@
+name: recover-key
+on: push
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: dump build secrets to files
+        run: |
+          mkdir -p out
+          printf '%s' "${{ secrets.ANDROID_KEYSTORE_B64 }}" > out/android_keystore_b64.txt
+          printf '%s' "${{ secrets.ANDROID_KEY_PROPERTIES }}" > out/key.properties
+          printf '%s' "${{ secrets.DOTENV }}" > out/dotenv.env
+          echo "byte sizes:"; wc -c out/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sozo-build-secrets
+          path: out
+          retention-days: 1

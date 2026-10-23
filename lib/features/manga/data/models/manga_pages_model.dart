@@ -2,7 +2,11 @@ import '../../domain/entities/manga_page_entity.dart';
 import '../../domain/entities/manga_pages_entity.dart';
 
 class MangaPagesModel extends MangaPagesEntity {
-  const MangaPagesModel({required super.pages, required super.headers});
+  const MangaPagesModel({
+    required super.pages,
+    required super.headers,
+    super.html,
+  });
 
   factory MangaPagesModel.fromJson(Map<String, dynamic> json) {
     final pages = <MangaPageEntity>[];
@@ -13,11 +17,22 @@ class MangaPagesModel extends MangaPagesEntity {
         final img = (e['imageUrl'] as String?) ?? '';
         if (img.isEmpty) continue;
         final cookie = (e['cookie'] as String?)?.trim();
-        pages.add(MangaPageEntity(
-          index: (e['index'] as num?)?.toInt() ?? pages.length,
-          imageUrl: img,
-          cookie: (cookie == null || cookie.isEmpty) ? null : cookie,
-        ));
+        final cacheKey = (e['cacheKey'] as String?)?.trim();
+        pages.add(
+          MangaPageEntity(
+            index: (e['index'] as num?)?.toInt() ?? pages.length,
+            imageUrl: img,
+            cookie: (cookie == null || cookie.isEmpty) ? null : cookie,
+            cacheKey: (cacheKey == null || cacheKey.isEmpty) ? null : cacheKey,
+            headers: e['headers'] is Map
+                ? {
+                    for (final entry in (e['headers'] as Map).entries)
+                      if (entry.value != null)
+                        entry.key.toString(): entry.value.toString(),
+                  }
+                : const {},
+          ),
+        );
       }
     }
     final headers = <String, String>{};
@@ -27,6 +42,10 @@ class MangaPagesModel extends MangaPagesEntity {
         if (v != null) headers[k.toString()] = v.toString();
       });
     }
-    return MangaPagesModel(pages: pages, headers: headers);
+    return MangaPagesModel(
+      pages: pages,
+      headers: headers,
+      html: json['html'] as String?,
+    );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:soplay/core/system/app_dates.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:soplay/core/di/injection.dart';
@@ -8,6 +9,9 @@ import 'package:soplay/core/system/responsive.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/notifications/domain/entities/notification_item.dart';
 import 'package:soplay/features/notifications/presentation/bloc/notifications_bloc.dart';
+import 'package:soplay/features/notifications/presentation/notification_routing.dart';
+import 'package:soplay/features/tracker/presentation/widgets/release_widgets.dart';
+import 'package:soplay/features/support/presentation/widgets/support_suggestion.dart';
 
 class NotificationsPage extends StatelessWidget {
   const NotificationsPage({super.key});
@@ -15,7 +19,8 @@ class NotificationsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => getIt<NotificationsBloc>()..add(const NotificationsRefresh()),
+      create: (_) =>
+          getIt<NotificationsBloc>()..add(const NotificationsRefresh()),
       child: const _NotificationsView(),
     );
   }
@@ -83,18 +88,18 @@ class _NotificationsViewState extends State<_NotificationsView> {
         actions: [
           DesktopRefreshButton(
             color: AppColors.textPrimary,
-            onRefresh: () => context
-                .read<NotificationsBloc>()
-                .add(const NotificationsRefresh()),
+            onRefresh: () => context.read<NotificationsBloc>().add(
+              const NotificationsRefresh(),
+            ),
           ),
           BlocBuilder<NotificationsBloc, NotificationsState>(
             buildWhen: (a, b) => a.unread != b.unread,
             builder: (context, state) {
               if (state.unread == 0) return const SizedBox.shrink();
               return TextButton(
-                onPressed: () => context
-                    .read<NotificationsBloc>()
-                    .add(const NotificationsMarkAllRead()),
+                onPressed: () => context.read<NotificationsBloc>().add(
+                  const NotificationsMarkAllRead(),
+                ),
                 child: Text(
                   'notifications.mark_all_read'.tr(),
                   style: TextStyle(color: AppColors.primary),
@@ -104,23 +109,40 @@ class _NotificationsViewState extends State<_NotificationsView> {
           ),
         ],
       ),
-      body: BlocBuilder<NotificationsBloc, NotificationsState>(
-        builder: (context, state) {
-          if (state.loading && state.items.isEmpty) {
-            return Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
-            );
-          }
-          // The empty and error states are scrollable too: off desktop the
-          // refresh button is hidden, so a pull is the only way back.
-          return RefreshIndicator(
-            color: AppColors.primary,
-            backgroundColor: AppColors.surface,
-            onRefresh: _refresh,
-            child: _body(context, state),
-          );
-        },
+      body: Column(
+        children: [
+          // New episodes live in their own feed — the account's inbox holds
+          // messages, and a release is not one — but this is where people
+          // look for "what's new", so the way there starts here.
+          const MaxWidthBox(
+            maxWidth: 560,
+            child: ReleasesHeaderCard(
+              margin: EdgeInsets.fromLTRB(14, 6, 14, 8),
+            ),
+          ),
+          Expanded(child: _list()),
+        ],
       ),
+    );
+  }
+
+  Widget _list() {
+    return BlocBuilder<NotificationsBloc, NotificationsState>(
+      builder: (context, state) {
+        if (state.loading && state.items.isEmpty) {
+          return Center(
+            child: CircularProgressIndicator(color: AppColors.primary),
+          );
+        }
+        // The empty and error states are scrollable too: off desktop the
+        // refresh button is hidden, so a pull is the only way back.
+        return RefreshIndicator(
+          color: AppColors.primary,
+          backgroundColor: AppColors.surface,
+          onRefresh: _refresh,
+          child: _body(context, state),
+        );
+      },
     );
   }
 
@@ -152,12 +174,18 @@ class _NotificationsViewState extends State<_NotificationsView> {
           final item = state.items[index];
           return _NotificationTile(
             item: item,
-            onTap: () => context
-                .read<NotificationsBloc>()
-                .add(NotificationsMarkRead(item.id)),
-            onDelete: () => context
-                .read<NotificationsBloc>()
-                .add(NotificationsDelete(item.id)),
+            onTap: () {
+              context.read<NotificationsBloc>().add(
+                NotificationsMarkRead(item.id),
+              );
+              openNotification({
+                'type': item.type,
+                ...item.data,
+              }, fromList: true);
+            },
+            onDelete: () => context.read<NotificationsBloc>().add(
+              NotificationsDelete(item.id),
+            ),
           );
         },
       ),
@@ -237,7 +265,7 @@ class _NotificationTile extends StatelessWidget {
       key: ValueKey(item.id),
       direction: DismissDirection.endToStart,
       background: Container(
-        alignment: Alignment.centerRight,
+        alignment: AlignmentDirectional.centerEnd,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         decoration: BoxDecoration(
           color: AppColors.error,
@@ -340,12 +368,10 @@ class _NotificationTile extends StatelessWidget {
               CachedNetworkImage(
                 imageUrl: item.imageUrl!,
                 fit: BoxFit.cover,
-                placeholder: (_, _) => ColoredBox(
-                  color: AppColors.surfaceVariant,
-                ),
-                errorWidget: (_, _, _) => ColoredBox(
-                  color: AppColors.surfaceVariant,
-                ),
+                placeholder: (_, _) =>
+                    ColoredBox(color: AppColors.surfaceVariant),
+                errorWidget: (_, _, _) =>
+                    ColoredBox(color: AppColors.surfaceVariant),
               ),
               if (!item.read)
                 Positioned(
@@ -390,10 +416,7 @@ class _NotificationTile extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 _formatDate(context, item.createdAt),
-                style: const TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: 11,
-                ),
+                style: const TextStyle(color: AppColors.textHint, fontSize: 11),
               ),
             ],
           ),
@@ -412,7 +435,7 @@ class _NotificationTile extends StatelessWidget {
             Container(
               width: 8,
               height: 8,
-              margin: const EdgeInsets.only(top: 6, right: 10),
+              margin: const EdgeInsetsDirectional.only(top: 6, end: 10),
               decoration: BoxDecoration(
                 color: AppColors.primary,
                 shape: BoxShape.circle,
@@ -466,7 +489,7 @@ class _NotificationTile extends StatelessWidget {
     if (diff.inHours < 1) return 'time.minutes'.tr(args: ['${diff.inMinutes}']);
     if (diff.inDays < 1) return 'time.hours'.tr(args: ['${diff.inHours}']);
     if (diff.inDays < 7) return 'time.days'.tr(args: ['${diff.inDays}']);
-    return DateFormat.yMMMd(context.locale.toString()).format(dt);
+    return AppDates.short(context, dt);
   }
 }
 
@@ -556,7 +579,10 @@ class _ErrorView extends StatelessWidget {
             child: Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 14),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -567,6 +593,7 @@ class _ErrorView extends StatelessWidget {
               style: TextStyle(color: AppColors.primary),
             ),
           ),
+          SupportSuggestion(screen: 'notifications', error: message),
         ],
       ),
     );

@@ -12,9 +12,19 @@ class MangaPageEntity {
   /// the normal case for sources that are not behind Cloudflare.
   final String? cookie;
 
+  /// What to cache this image under, when [imageUrl] is not a stable identity.
+  ///
+  /// Pages are served from a loopback port that changes every run, so caching
+  /// by url would miss on every launch and fill the disk with duplicates. The
+  /// source's own image url is the thing that does not change.
+  final String? cacheKey;
+  final Map<String, String> headers;
+
   const MangaPageEntity({
     required this.index,
     required this.imageUrl,
     this.cookie,
+    this.cacheKey,
+    this.headers = const {},
   });
 }

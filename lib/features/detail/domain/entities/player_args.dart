@@ -40,9 +40,55 @@ class PlayerArgs {
   /// question had no way to answer it.
   final String? liveChannelId;
 
+  /// A provider's resolve said this is a live broadcast (a TV channel from a
+  /// source), for the paths that resolve before opening the player.
+  final bool live;
+
   final String? mediaRef;
   final String? lang;
   final String? partyCode;
+
+  /// Where [episodes] sits inside the whole run.
+  ///
+  /// ## Why the player needs to know
+  ///
+  /// The episodes screen loads one page at a time — a hundred entries — and
+  /// used to hand the player exactly that list. Every "is there a next
+  /// episode" question in the player then answered against a hundred, so
+  /// opening episode 4 of a 1176-episode show meant Next went grey at 100,
+  /// autoplay stopped, and there was no way out from inside the player. The
+  /// list was never the series; it was the page of it that happened to be
+  /// loaded.
+  ///
+  /// [windowStart] is the absolute index of `episodes[0]`, so the true
+  /// position is `windowStart + episodeIndex`. Everything that INDEXES
+  /// `episodes` stays window-relative; only the bounds and the page-crossing
+  /// use these.
+  ///
+  /// Zero and an empty total mean "this list is the whole thing", which is
+  /// what every caller that does not page gets by default.
+  final int windowStart;
+
+  /// How many episodes the series has in total, not how many are loaded.
+  final int totalEpisodes;
+
+  /// The page size the window was fetched with, so the player can ask for the
+  /// next or previous page itself.
+  final int pageSize;
+
+  /// `asc` or `desc` — the order the window was fetched in, which decides
+  /// which page is "next".
+  final String sort;
+
+  /// Which episode a downloaded file is, when it belongs to a series.
+  ///
+  /// An offline episode plays as a single file — there is nothing to resolve
+  /// and no episode list — so without this the player saw a film. It then
+  /// wrote a film-shaped history row under the series url, which the detail
+  /// page's Continue card prefers over the real per-episode rows, and reported
+  /// "episode 1" to AniList for whichever episode was actually watched.
+  final int? offlineEpisodeNumber;
+  final String? offlineEpisodeLabel;
 
   const PlayerArgs({
     required this.title,
@@ -61,10 +107,27 @@ class PlayerArgs {
     this.thumbnails,
     this.extractor,
     this.liveChannelId,
+    this.live = false,
     this.mediaRef,
     this.lang,
     this.partyCode,
+    this.windowStart = 0,
+    this.totalEpisodes = 0,
+    this.pageSize = 0,
+    this.sort = 'asc',
+    this.offlineEpisodeNumber,
+    this.offlineEpisodeLabel,
   });
+
+  /// The number of episodes the player should behave as if it has.
+  ///
+  /// Falls back to the loaded list, so a caller that knows nothing about
+  /// paging behaves exactly as before.
+  int get effectiveTotal => totalEpisodes > 0 ? totalEpisodes : episodes.length;
+
+  /// Whether the loaded window is only part of the run.
+  bool get isWindowed =>
+      episodes.isNotEmpty && effectiveTotal > episodes.length;
 
   bool get isSerial => episodes.isNotEmpty;
 }

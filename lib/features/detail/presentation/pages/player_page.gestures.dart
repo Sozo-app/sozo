@@ -17,40 +17,63 @@ extension _PlayerGestures on _PlayerPageState {
     }
   }
 
-  void _onHDragStart(DragStartDetails _) {
+  /// [initialDeltaPx]: how far the finger has already travelled from where
+  /// it touched down, by the time the swipe was recognised as horizontal.
+  void _onHDragStart(
+    DragStartDetails _, {
+    double initialDeltaPx = 0,
+    required double widthPx,
+  }) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     _hideTimer?.cancel();
     if (!_controlsVisible) {
-      _controlsVisible = true;
+      // setState, not a bare assignment. The overlay is painted by a
+      // FadeTransition, which rebuilds only itself, while `_controlsVisible` is
+      // also read by the `IgnorePointer` inside _buildControlsOverlay. Flipping
+      // the flag without a rebuild faded the controls in over the video and
+      // left every one of them inert: play/pause, the seek bar, every button.
+      // Measured — a swipe then a tap on the play button gave opacity=1.0 with
+      // zero taps delivered. And since _scheduleHide only fires while the video
+      // is PLAYING, pausing in that state left the dead overlay up for good.
+      setState(() => _controlsVisible = true);
       _controlsAnimation.forward();
     }
+    FramePreviewService.scrubbing = true;
     _scrub.value = _ScrubState(
       baseline: c.value.position,
       duration: c.value.duration,
-      deltaPx: 0,
-      span: 1,
+      deltaPx: initialDeltaPx,
+      widthPx: widthPx,
     );
   }
 
   void _onHDragUpdate(DragUpdateDetails details, BoxConstraints constraints) {
     final state = _scrub.value;
     if (state == null) return;
-    _scrub.value = state.copyWith(
-      deltaPx: state.deltaPx + details.delta.dx,
-      span: constraints.maxWidth,
-    );
+    final next = state.copyWith(deltaPx: state.deltaPx + details.delta.dx);
+    // A tick when the finger crosses back into "never mind", and out of it.
+    if (next.cancels != state.cancels) HapticFeedback.selectionClick();
+    _scrub.value = next;
   }
 
   void _onHDragEnd(DragEndDetails _) {
+    unawaited(FramePreviewService.endScrub());
     final state = _scrub.value;
     final c = _controller;
+    FramePreviewService.scrubbing = false;
     _scrub.value = null;
     if (state == null || c == null || !c.value.isInitialized) {
       _scheduleHide();
       return;
     }
-    final target = state.previewPosition(_scrubSecondsPerFullSwipe);
+    // Brought back to where it began: nothing to do. It used to seek to the
+    // position the swipe started from, a jump backwards and a rebuffer.
+    if (state.cancels) {
+      _scheduleHide();
+      return;
+    }
+    final target = state.previewPosition();
     // Route through _seekTo so the swipe-scrub honours the party control gate
     // and broadcasts the seek, like every other seek surface.
     _seekTo(target);
@@ -58,6 +81,8 @@ extension _PlayerGestures on _PlayerPageState {
   }
 
   void _onHDragCancel() {
+    unawaited(FramePreviewService.endScrub());
+    FramePreviewService.scrubbing = false;
     _scrub.value = null;
     _scheduleHide();
   }
@@ -106,6 +131,98 @@ extension _PlayerGestures on _PlayerPageState {
     });
   }
 
+  // ── scale: the one recogniser that covers both hands ──────────────────────
+  //
+  // Flutter refuses a pan recogniser and a scale recogniser on the same
+  // detector — scale is a superset of pan, and having both asserts. So the
+  // player now registers only onScale*, and one finger is routed straight back
+  // into the pan logic below, unchanged. ScaleUpdateDetails carries everything
+  // DragUpdateDetails did: focalPointDelta is delta, localFocalPoint is
+  // localPosition.
+  //
+  // pointerCount is checked on every update rather than once at the start,
+  // because a second finger often lands a frame or two after the first.
+
+  void _onScaleStart(ScaleStartDetails d, BoxConstraints constraints) {
+    _zoomAtPinchStart = _videoZoom;
+    _onPanStart(
+      DragStartDetails(
+        globalPosition: d.focalPoint,
+        localPosition: d.localFocalPoint,
+      ),
+      constraints,
+    );
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails d, BoxConstraints constraints) {
+    if (d.pointerCount < 2 && _pinchLatched) return;
+    if (d.pointerCount >= 2) {
+      // A pinch cancels whatever the single-finger path had begun, so a
+      // brightness slide does not keep running under the zoom.
+      if (_dragStart != null) _onPanCancel();
+      final next = (_zoomAtPinchStart * d.scale)
+          .clamp(_kMinZoom, _kMaxZoom)
+          .toDouble();
+      if (next != _videoZoom) {
+        setState(() => _videoZoom = next);
+        _swipeIndicator.value = _SwipeIndicator(_SwipeType.zoom, next);
+      }
+      return;
+    }
+    _onPanUpdate(
+      DragUpdateDetails(
+        globalPosition: d.focalPoint,
+        localPosition: d.localFocalPoint,
+        delta: d.focalPointDelta,
+      ),
+      constraints,
+    );
+  }
+
+  void _onScaleEnd(ScaleEndDetails d) {
+    // Taken away by the system rather than lifted: undo, never commit.
+    if (_pointerCancelled) {
+      _pointerCancelled = false;
+      _pinchLatched = false;
+      _onPanCancel();
+      return;
+    }
+    if (d.pointerCount >= 1 || _dragStart == null) {
+      // Fingers lifting out of a pinch, or a pinch that never became a drag.
+      // A scrub or a brightness slide under way when the second finger came
+      // down is cancelled: left alone, its card stayed on screen for good.
+      if (_dragIsHorizontal == true) _onHDragCancel();
+      if (_dragSwipeType != null) _swipeIndicator.value = null;
+      _hideZoomBadgeSoon();
+      _pinchLatched = d.pointerCount >= 1;
+      _dragStart = null;
+      _dragIsHorizontal = null;
+      _dragSwipeType = null;
+      return;
+    }
+    _pinchLatched = false;
+    _onPanEnd(DragEndDetails(velocity: d.velocity));
+  }
+
+  /// Clears the zoom badge a moment after the fingers leave, the same way the
+  /// brightness and volume badges clear.
+  void _hideZoomBadgeSoon() {
+    if (_swipeIndicator.value?.type != _SwipeType.zoom) return;
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      if (_swipeIndicator.value?.type == _SwipeType.zoom) {
+        _swipeIndicator.value = null;
+      }
+    });
+  }
+
+  /// Back to untouched. Called when a new episode loads, since a crop tuned for
+  /// one aspect ratio is wrong for the next.
+  void _resetZoom() {
+    if (_videoZoom == _kMinZoom) return;
+    setState(() => _videoZoom = _kMinZoom);
+  }
+
   void _onPanStart(DragStartDetails d, BoxConstraints constraints) {
     _dragStart = d.localPosition;
     _dragIsHorizontal = null;
@@ -123,12 +240,23 @@ extension _PlayerGestures on _PlayerPageState {
       _dragIsHorizontal = dx > dy;
 
       if (_dragIsHorizontal!) {
+        // Nothing to scrub on a broadcast, a guest without control may not
+        // seek, and a swipe over an open panel belongs to the panel. Refused
+        // here, at the start, not after a whole drag with a preview drawn.
+        if (_isLive || _panel != _SidePanel.none || _partyBlockLocal()) {
+          return;
+        }
+        final from = _pointerDownAt ?? start;
         _onHDragStart(
           DragStartDetails(
             globalPosition: d.globalPosition,
             localPosition: d.localPosition,
           ),
+          initialDeltaPx: d.localPosition.dx - from.dx,
+          // The long side, so the rate is the same held either way.
+          widthPx: constraints.biggest.longestSide,
         );
+        return;
       } else {
         final isLeft = start.dx < constraints.maxWidth * 0.5;
         _dragSwipeType = isLeft ? _SwipeType.brightness : _SwipeType.volume;
@@ -148,14 +276,14 @@ extension _PlayerGestures on _PlayerPageState {
       final delta = -(d.delta.dy) / (constraints.maxHeight * 0.7);
       if (_dragSwipeType == _SwipeType.brightness) {
         _brightness = (_brightness + delta).clamp(0.0, 1.0).toDouble();
-        unawaited(_setSystemBrightness(_brightness));
+        _pushSystemLevels(brightness: true);
         _swipeIndicator.value = _SwipeIndicator(
           _SwipeType.brightness,
           _brightness,
         );
       } else {
         _volume = (_volume + delta).clamp(0.0, 1.0).toDouble();
-        unawaited(_setSystemVolume(_volume));
+        _pushSystemLevels(volume: true);
         _swipeIndicator.value = _SwipeIndicator(_SwipeType.volume, _volume);
       }
     }

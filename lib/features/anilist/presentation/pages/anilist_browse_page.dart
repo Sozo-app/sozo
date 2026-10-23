@@ -93,8 +93,9 @@ class _AnilistBrowsePageState extends State<AnilistBrowsePage> {
     } catch (e) {
       if (!mounted) return;
       if (shelf != _shelf) return;
-      final message =
-          e is AnilistException ? e.message : 'anilist.browse_failed'.tr();
+      final message = e is AnilistException
+          ? e.message
+          : 'anilist.browse_failed'.tr();
       setState(() {
         _loading = false;
         _error = message;
@@ -410,7 +411,8 @@ class _MediaSheet extends StatelessWidget {
                       spacing: 6,
                       runSpacing: 6,
                       children: [
-                        if (media.format != null) AnilistChip(label: media.format!),
+                        if (media.format != null)
+                          AnilistChip(label: media.format!),
                         if (media.seasonYear != null)
                           AnilistChip(label: '${media.seasonYear}'),
                         if (media.episodes != null)
@@ -485,7 +487,6 @@ class _MediaSheet extends StatelessWidget {
   }
 }
 
-
 /// Lets the caller name the source before the search runs.
 ///
 /// The provider list comes from the same bloc the search screens read, so a
@@ -520,7 +521,7 @@ Future<void> _pickSource(BuildContext context, String title) async {
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
             child: Align(
-              alignment: Alignment.centerLeft,
+              alignment: AlignmentDirectional.centerStart,
               child: Text(
                 'anilist.search_in_source'.tr(),
                 style: const TextStyle(

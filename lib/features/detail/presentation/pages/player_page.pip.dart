@@ -30,13 +30,12 @@ extension _PlayerPip on _PlayerPageState {
         _seekRelative(_seekStep);
       case 'prev':
         if (_partyBlockEpisodeNav()) return;
-        if (widget.args.isSerial && _episodeIndex - 1 >= 0) {
-          _loadEpisode(_episodeIndex - 1);
-        }
+        // The SERIES bounds, not the loaded page's: at the top of page two
+        // `_episodeIndex - 1` is -1, and _loadEpisode pages back across it.
+        if (_hasPrevEpisode) _loadEpisode(_episodeIndex - 1);
       case 'next':
         if (_partyBlockEpisodeNav()) return;
-        if (widget.args.isSerial &&
-            _episodeIndex + 1 < widget.args.episodes.length) {
+        if (widget.args.isSerial && _hasNextEpisode) {
           _loadEpisode(_episodeIndex + 1);
         }
     }
@@ -46,9 +45,8 @@ extension _PlayerPip on _PlayerPageState {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     final isPlaying = c.value.isPlaying;
-    final hasPrev = widget.args.isSerial && _episodeIndex > 0;
-    final hasNext =
-        widget.args.isSerial && _episodeIndex + 1 < widget.args.episodes.length;
+    final hasPrev = _hasPrevEpisode;
+    final hasNext = _hasNextEpisode;
     if (isPlaying == _lastPipPlaying) {
       try {
         await _pipChannel.invokeMethod('updatePiPActions', {
@@ -70,6 +68,7 @@ extension _PlayerPip on _PlayerPageState {
   }
 
   Future<void> _enterPip() async {
+    if (isIosPlatform) return _enterIosPip();
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     try {
@@ -103,6 +102,221 @@ extension _PlayerPip on _PlayerPageState {
     } catch (_) {}
   }
 
+  /// iOS: the episode goes to a native player the system can float — the
+  /// in-app one draws through a Flutter texture no PiP controller can take —
+  /// at the same second and speed. [_onIosPipCall] picks it back up.
+  Future<void> _enterIosPip() async {
+    final c = _controller;
+    final url = _videoUrl;
+    if (c == null || !c.value.isInitialized || url == null || url.isEmpty) {
+      return;
+    }
+    final wasPlaying = c.value.isPlaying;
+    final position = c.value.position.inMilliseconds;
+    await c.pause();
+    if (!mounted) return;
+    _hideTimer?.cancel();
+    setState(() {
+      _isPip = true;
+      _controlsVisible = false;
+      _panel = _SidePanel.none;
+    });
+    _controlsAnimation.reverse();
+    var ok = false;
+    try {
+      ok =
+          await _iosPipChannel.invokeMethod<bool>('start', {
+            'url': url,
+            'headers': _headers,
+            'positionMs': position,
+            'rate': c.value.playbackSpeed,
+          }) ??
+          false;
+    } catch (_) {}
+    if (ok || !mounted) return;
+    setState(() => _isPip = false);
+    if (wasPlaying) unawaited(c.play());
+    _toast('player.pip_unavailable'.tr());
+  }
+
+  /// The floating window closed — by the viewer returning to the app or
+  /// dismissing it: playback carries on here from where it got to.
+  Future<void> _onIosPipCall(MethodCall call) async {
+    if (call.method != 'stopped' && call.method != 'failed') return;
+    final c = _controller;
+    if (!mounted || c == null) return;
+    setState(() => _isPip = false);
+    if (call.method == 'failed') return;
+    final args = (call.arguments as Map?) ?? const {};
+    final ms = (args['positionMs'] as num?)?.toInt() ?? 0;
+    if (ms > 0) await c.seekTo(Duration(milliseconds: ms));
+    // Back in the app it plays on if it was playing; closed from the window
+    // it stays paused, as the system player left it.
+    if (args['playing'] == true && args['restored'] == true) {
+      unawaited(c.play());
+    }
+  }
+
+  /// Desktop picture-in-picture: the whole window becomes a small player
+  /// above every other window, and back.
+  Future<void> _toggleDesktopMini() async {
+    if (!isDesktopPlatform) return;
+    if (_desktopMini) {
+      setState(() {
+        _desktopMini = false;
+        _isPip = false;
+      });
+      _miniHover.value = false;
+      await DesktopWindow.exitMini();
+      return;
+    }
+    final size = _controller?.value.size ?? Size.zero;
+    final aspect = size.width > 0 && size.height > 0
+        ? size.width / size.height
+        : 16 / 9;
+    _hideTimer?.cancel();
+    setState(() {
+      _desktopMini = true;
+      _isPip = true;
+      _controlsVisible = false;
+      _panel = _SidePanel.none;
+      if (_isFullscreen) _isFullscreen = false;
+    });
+    _controlsAnimation.reverse();
+    await DesktopWindow.enterMini(aspect: aspect);
+  }
+
+  /// The mini window's own controls, shown while the pointer is over it:
+  /// play or pause in the middle, back to the full window and a step either
+  /// way at the top, and how far along under it. The rest of the window is a
+  /// handle to move it by.
+  Widget _buildDesktopMiniOverlay() {
+    final c = _controller;
+    Widget round(
+      IconData icon,
+      String tip,
+      VoidCallback onTap, {
+      double size = 18,
+    }) => Tooltip(
+      message: tip,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.55),
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(7),
+            child: Icon(icon, color: Colors.white, size: size),
+          ),
+        ),
+      ),
+    );
+    return Positioned.fill(
+      child: MouseRegion(
+        onEnter: (_) => _miniHover.value = true,
+        onHover: (_) => _miniHover.value = true,
+        onExit: (_) => _miniHover.value = false,
+        child: ValueListenableBuilder<bool>(
+          valueListenable: _miniHover,
+          builder: (context, hover, _) => AnimatedOpacity(
+            opacity: hover ? 1 : 0,
+            duration: const Duration(milliseconds: 160),
+            child: IgnorePointer(
+              ignoring: !hover,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  const DragToMoveArea(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Color(0x99000000),
+                            Color(0x22000000),
+                            Color(0x99000000),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        round(
+                          Icons.fast_rewind_rounded,
+                          'player.rewind'.tr(),
+                          () => _seekRelative(-_seekStep),
+                        ),
+                        const SizedBox(width: 14),
+                        if (c != null)
+                          ListenableBuilder(
+                            listenable: c,
+                            builder: (_, _) => round(
+                              c.value.isPlaying
+                                  ? Icons.pause_rounded
+                                  : Icons.play_arrow_rounded,
+                              c.value.isPlaying
+                                  ? 'player.pause'.tr()
+                                  : 'player.play'.tr(),
+                              _togglePlay,
+                              size: 30,
+                            ),
+                          ),
+                        const SizedBox(width: 14),
+                        round(
+                          Icons.fast_forward_rounded,
+                          'player.forward'.tr(),
+                          () => _seekRelative(_seekStep),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: round(
+                      Icons.open_in_full_rounded,
+                      'player.mini_restore'.tr(),
+                      _toggleDesktopMini,
+                    ),
+                  ),
+                  if (c != null)
+                    Positioned(
+                      left: 10,
+                      right: 10,
+                      bottom: 8,
+                      child: ListenableBuilder(
+                        listenable: c,
+                        builder: (_, _) {
+                          final d = c.value.duration.inMilliseconds;
+                          final p = c.value.position.inMilliseconds;
+                          return ClipRRect(
+                            borderRadius: BorderRadius.circular(2),
+                            child: LinearProgressIndicator(
+                              value: d > 0 ? (p / d).clamp(0.0, 1.0) : 0,
+                              minHeight: 3,
+                              backgroundColor: Colors.white24,
+                              valueColor: AlwaysStoppedAnimation(
+                                AppColors.primary,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _startup() async {
     final sw = Stopwatch()..start();
     _plog('startup — entering fullscreen');
@@ -110,33 +324,18 @@ extension _PlayerPip on _PlayerPageState {
     _plog('fullscreen ready in ${sw.elapsedMilliseconds}ms');
     if (!mounted) return;
 
-    // Ask which backend to use *before* anything is resolved or decoded, so the
-    // engine the user picks is the only one that ever runs. Opt-in
-    // (askEngineOnPlay defaults to false) and Android-only — every other
-    // platform is pinned to a single backend, so showPlayerEngineSheet
-    // short-circuits there.
-    //
-    // A party guest is exempt: the sheet would block the sync handshake behind
-    // a modal, and the guest is not the one driving playback anyway.
-    if (_hive.askEngineOnPlay && !_inParty) {
-      final proceed = await showPlayerEngineSheet(context);
-      if (!mounted) return;
-      // Dismissed without choosing — leave rather than start on an engine the
-      // user never confirmed.
-      if (!proceed) {
-        _exit();
-        return;
-      }
-    }
-
+    // The engine question is asked BEFORE this page is pushed — see
+    // confirmPlayerEngine. It used to be asked here, which put a modal over a
+    // player showing nothing: a black rectangle with a question on top, which
+    // reads as the video having failed rather than as a choice being offered.
     await _bootstrap();
   }
 
   Future<void> _enterFullscreen() async {
-    if (isDesktopPlatform) {
-      if (_hive.keepScreenOn) await WakelockPlus.enable();
-      return;
-    }
+    // No wakelock here. Entering the player is not watching: resolution can
+    // take half a minute and the viewer may never press play. _syncWakelock
+    // takes the hold when the picture actually starts moving.
+    if (isDesktopPlatform) return;
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     try {
       await AppOrientation.set([
@@ -144,7 +343,6 @@ extension _PlayerPip on _PlayerPageState {
         DeviceOrientation.landscapeRight,
       ]);
     } catch (_) {}
-    if (_hive.keepScreenOn) await WakelockPlus.enable();
   }
 
   Future<void> _toggleFullscreen() async {
@@ -158,9 +356,7 @@ extension _PlayerPip on _PlayerPageState {
     _isPortrait = !_isPortrait;
     try {
       if (_isPortrait) {
-        await AppOrientation.set([
-          DeviceOrientation.portraitUp,
-        ]);
+        await AppOrientation.set([DeviceOrientation.portraitUp]);
       } else {
         await AppOrientation.set([
           DeviceOrientation.landscapeLeft,
@@ -178,9 +374,10 @@ extension _PlayerPip on _PlayerPageState {
         _isFullscreen = false;
         await DesktopWindow.setFullscreen(false);
       }
-      try {
-        await WakelockPlus.disable();
-      } catch (_) {}
+      // Only this page's hold: a download on this machine may still need the
+      // screen awake after the player closes.
+      _wakelockHeld = false;
+      await WakelockHolds.release(this);
       return;
     }
     try {
@@ -188,11 +385,35 @@ extension _PlayerPip on _PlayerPageState {
         SystemUiMode.manual,
         overlays: SystemUiOverlay.values,
       );
-      await AppOrientation.set([
-        DeviceOrientation.portraitUp,
-      ]);
+      await AppOrientation.set([DeviceOrientation.portraitUp]);
     } catch (_) {}
-    await WakelockPlus.disable();
+    _wakelockHeld = false;
+    await WakelockHolds.release(this);
+  }
+
+  /// A swipe asks for a new level on every touch sample — 120 a second on a
+  /// fast panel — and each call was a window relayout or an AudioManager IPC
+  /// on the thread that draws the next frame. The first goes at once, then at
+  /// most one per 50 ms; the trailing call lands wherever the finger stopped.
+  void _pushSystemLevels({bool brightness = false, bool volume = false}) {
+    _brightnessDirty |= brightness;
+    _volumeDirty |= volume;
+    if (_systemLevelTimer?.isActive ?? false) return;
+    _flushSystemLevels();
+    _systemLevelTimer = Timer(const Duration(milliseconds: 50), () {
+      if (mounted) _flushSystemLevels();
+    });
+  }
+
+  void _flushSystemLevels() {
+    if (_brightnessDirty) {
+      _brightnessDirty = false;
+      unawaited(_setSystemBrightness(_brightness));
+    }
+    if (_volumeDirty) {
+      _volumeDirty = false;
+      unawaited(_setSystemVolume(_volume));
+    }
   }
 
   Future<void> _setSystemBrightness(double value) async {

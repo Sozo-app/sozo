@@ -155,15 +155,60 @@ val extensionSerialization = "1.11.0"
 val extensionCoroutines = "1.11.0"
 val extensionJsoup = "1.22.2"
 
+// media3, held level with what video_player_android already pulls in.
+//
+// Two ExoPlayers on one classpath is one ExoPlayer: Gradle resolves to the
+// highest version either side asks for, so declaring a lower number here does
+// not pin anything — it silently becomes video_player's version at both compile
+// and run time. Verified by resolving debugRuntimeClasspath: 1.4.1 declared
+// here came out as 1.9.2, which is what the plugin brings.
+//
+// So the number is written down to MATCH, not to override, and the reason to
+// keep it written down is that this code compiles against these APIs directly.
+// When a Flutter upgrade moves video_player's media3, this must move with it —
+// otherwise the mismatch shows up as a NoSuchMethodError during playback and
+// nothing at all at build time.
+//
+// Check with:
+//   ./gradlew :app:dependencies --configuration debugRuntimeClasspath | grep media3
+val media3 = "1.9.2"
+
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
+    // ExoPlayer, driven directly, for the encrypted streams only.
+    //
+    // video_player_android already bundles an ExoPlayer, but its plugin API
+    // exposes no way to attach a DrmSessionManager — the capability is in the
+    // engine, not in the surface it offers. Rather than fork the plugin, DRM
+    // playback drives media3 itself (see drm/DrmPlayerHost.kt) and renders into
+    // a Flutter texture, so it is a drop-in third backend behind the app's
+    // existing PlayerController and the player UI never learns it exists.
+    //
+    // dash because that is what CENC-encrypted channels ship as; hls because a
+    // DRM mirror sometimes falls back to one and a missing extractor there
+    // presents as an unplayable stream rather than a missing feature.
+    implementation("androidx.media3:media3-exoplayer:$media3")
+    implementation("androidx.media3:media3-exoplayer-dash:$media3")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3")
+    // FrameExtractor: seek-bar frames for HLS (preview/HlsFramePreview.kt).
+    implementation("androidx.media3:media3-inspector:$media3")
+    implementation("androidx.media3:media3-datasource-okhttp:$media3")
+
     // CloudStream provider runtime (Android-only feature). The `library` module
     // carries MainAPI/APIHolder/`app` HTTP client/extractors/BasePlugin so .cs3
-    // plugins load against it. Resolves on JitPack (POM/module/jar verified at
-    // v4.7.0; Gradle picks the KMP android variant via .module). See
-    // docs/CLOUDSTREAM_INTEGRATION.md + cloudstream/PluginHost.kt.
-    implementation("com.github.recloudstream.cloudstream:library:v4.7.0")
+    // plugins load against it. Resolves on JitPack (Gradle picks the KMP android
+    // variant via .module). See docs/CLOUDSTREAM_INTEGRATION.md +
+    // cloudstream/PluginHost.kt.
+    //
+    // v4.8.0, not v4.7.0. `MainAPIKt.getJson()` arrived in 4.8 and 60 of the 100
+    // plugins in the two repos this app recommends reference it — and because
+    // `parseJson`/`tryParseJson` are inline, the reference sits in the plugin's
+    // own getMainPage/load/search rather than behind a library call, so those
+    // plugins failed on every request with NoSuchMethodError. 4.8 also adds
+    // StringUtils.encodeUrl and keeps getMapper(), so the older plugins that
+    // use that still link.
+    implementation("com.github.recloudstream.cloudstream:library:v4.8.0")
     // CloudStream plugins/extractors use coroutines on the IO dispatcher.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:$extensionCoroutines")
     // compileOnly: lets our clean-room CloudflareKiller implement okhttp3.Interceptor.
@@ -171,6 +216,26 @@ dependencies {
     // `implementation`-scoped there, so it isn't on our compile classpath). The
     // Interceptor/Response/Headers APIs used are stable across okhttp 4.x/5.x.
     compileOnly("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Brotli and Zstd, because the extensions expect them and we were not
+    // shipping them.
+    //
+    // Current Keiyoushi extensions build their OkHttpClient with
+    // `CompressionInterceptor(Brotli, Zstd)`, and both classes live in
+    // artifacts separate from okhttp core. Without them the very first request
+    // an affected extension makes dies with NoClassDefFoundError — and because
+    // the client is behind a Kotlin `lazy`, that failure is permanent for the
+    // process. Nineteen of forty sampled extensions reference them, including
+    // MangaDex, Weeb Central, Asura Scans, MangaFire and Manganato, which is
+    // why "manga extensions don't work" reads as all of them.
+    //
+    // Pinned to what okhttp core actually resolves to here (4.12.0 -> 5.3.2,
+    // dragged in transitively); these must move together with it.
+    implementation("com.squareup.okhttp3:okhttp-brotli:5.3.2")
+    implementation("com.squareup.okhttp3:okhttp-zstd:5.3.2")
+    // DNS over HTTPS, for the setting of the same name. Same version pin, same
+    // reason. See ExtensionDns.
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.3.2")
 
     // Aniyomi extension runtime (Android-only). Extension APKs compile against the
     // stub `extensions-lib` as compileOnly, so the host app must supply the real
@@ -182,7 +247,18 @@ dependencies {
     implementation("io.reactivex:rxjava:1.3.8")
     implementation("androidx.preference:preference-ktx:1.2.1")
     // JS engine for Aniyomi extractors that deobfuscate links (QuickJS).
-    implementation("app.cash.quickjs:quickjs-android:0.9.2")
+    //
+    // The published app.cash.quickjs:quickjs-android:0.9.2 with its native
+    // library rebuilt: the upstream libquickjs.so is 4 KB page-aligned, which
+    // Android 15+ devices with 16 KB pages warn about at launch and Play
+    // rejects. Same Java classes (the AAR's own classes.jar), same sources —
+    // cashapp/zipline at a738129cc4, "Prepare version 0.9.2" — and the same
+    // eight JNI entry points, built with NDK r28 and
+    // -Wl,-z,max-page-size=16384. Extensions compile against the
+    // app.cash.quickjs API, so it has to stay this library and this version.
+    // The upstream artifact is excluded below so nothing brings it back.
+    implementation(files("libs/quickjs-android-0.9.2-16k.aar"))
+    implementation("androidx.annotation:annotation:1.9.1")
 
     // Local HTTP bridge: lets a desktop soplay client reach the on-device
     // extension hosts when this app runs on a local emulator/device. The server
@@ -198,5 +274,21 @@ dependencies {
     // SIZE: this ships libgojni.so for all four ABIs, ~48 MB uncompressed. It is
     // by far the biggest single native payload in the app — see the size note in
     // .github/workflows/release.yml before changing how ABIs are split.
-    implementation("com.github.recloudstream:torrentserver:7861970")
+    //
+    // Vendored with libgojni.so rebuilt 16 KB page-aligned (the published one
+    // is 4 KB-aligned; see the quickjs note above for why that matters). The
+    // Java side is the published AAR's own classes.jar, hand-patched upstream
+    // for lazy loading, untouched. The native side is the same commit
+    // (recloudstream/torrentserver 7861970) built with Go 1.23.5, gomobile at
+    // golang/mobile cd096645 (its last commit before that release) and NDK
+    // r28. Its eleven JNI entry points match the original's, and every class
+    // signature it calls back into matches, apart from the upstream patches.
+    implementation(files("libs/torrentserver-7861970-16k.aar"))
+}
+
+// See the quickjs and torrentserver entries in dependencies: the 16 KB-aligned
+// rebuilds replace them, so nothing may bring the published ones back.
+configurations.all {
+    exclude(group = "app.cash.quickjs", module = "quickjs-android")
+    exclude(group = "com.github.recloudstream", module = "torrentserver")
 }

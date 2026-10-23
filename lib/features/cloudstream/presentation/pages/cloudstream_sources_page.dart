@@ -1,8 +1,11 @@
 import 'dart:async';
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'package:soplay/core/di/injection.dart';
+import 'package:soplay/core/storage/hive_service.dart';
 import 'package:soplay/core/cloudstream/cloudstream_channel.dart';
 import 'package:soplay/core/theme/app_colors.dart';
 import 'package:soplay/features/extensions/domain/entities/extension_repo_entity.dart';
@@ -37,8 +40,9 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
       if (!mounted || !_busy) return;
       setState(() {
         _status = p.total > 0
-            ? 'Installing ${p.current} / ${p.total} plugins…'
-            : 'Installing plugins…';
+            ? 'ext.installing_plugins_progress'
+                .tr(args: ['${p.current}', '${p.total}'])
+            : 'ext.installing_plugins'.tr();
         _statusError = false;
       });
     });
@@ -95,7 +99,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
     if (!mounted) return;
     setState(() {
       _statusError = false;
-      _status = 'Source removed.';
+      _status = 'ext.source_removed'.tr();
     });
   }
 
@@ -104,7 +108,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
     setState(() {
       _busy = true;
       _statusError = false;
-      _status = 'Checking for updates…';
+      _status = 'ext.checking_updates'.tr();
     });
     try {
       final res = await CloudStreamChannel.checkUpdates();
@@ -118,15 +122,18 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
       setState(() {
         _statusError = false;
         _status = updated.isEmpty
-            ? 'All extensions are up to date.'
-            : 'Updated ${updated.length}: '
-                '${updated.take(6).join(', ')}${updated.length > 6 ? '…' : ''}';
+            ? 'ext.all_up_to_date'.tr()
+            : 'ext.updated_list'.tr(args: [
+                '${updated.length}',
+                '${updated.take(6).join(', ')}'
+                    '${updated.length > 6 ? '…' : ''}',
+              ]);
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _statusError = true;
-        _status = 'Error: $e';
+        _status = 'ext.error'.tr(args: ['$e']);
       });
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -137,9 +144,9 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
   Widget build(BuildContext context) {
     if (!CloudStreamChannel.isSupported) {
       return Scaffold(
-        appBar: AppBar(title: const Text('CloudStream Sources')),
-        body: const Center(
-          child: Text('This feature is only available on Android'),
+        appBar: AppBar(title: Text('ext.cloudstream_title'.tr())),
+        body: Center(
+          child: Text('ext.android_only'.tr()),
         ),
       );
     }
@@ -150,7 +157,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         elevation: 0,
-        title: const Text('CloudStream Sources'),
+        title: Text('ext.cloudstream_title'.tr()),
         actions: [
           PopupMenuButton<String>(
             enabled: !_busy && _repos.isNotEmpty,
@@ -159,16 +166,16 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
             onSelected: (v) {
               if (v == 'updates') _checkUpdates();
             },
-            itemBuilder: (_) => const [
+            itemBuilder: (_) => [
               PopupMenuItem<String>(
                 value: 'updates',
                 child: Row(
                   children: [
-                    Icon(Icons.system_update_alt,
+                    const Icon(Icons.system_update_alt,
                         size: 18, color: Colors.white70),
-                    SizedBox(width: 10),
-                    Text('Check for updates',
-                        style: TextStyle(color: Colors.white)),
+                    const SizedBox(width: 10),
+                    Text('ext.check_updates'.tr(),
+                        style: const TextStyle(color: Colors.white)),
                   ],
                 ),
               ),
@@ -188,6 +195,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
           ],
           const SizedBox(height: 24),
           RecommendedReposSection(
+            nsfwAllowed: getIt<HiveService>().showAdultContent,
             kind: ExtensionRepoKind.cloudstream,
             installedUrls: {for (final r in _repos) (r['url'] ?? '').trim()},
             busy: _busy,
@@ -200,7 +208,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
           const SizedBox(height: 24),
           Row(
             children: [
-              Text('INSTALLED SOURCES',
+              Text('ext.installed_sources'.tr(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: AppColors.textHint, letterSpacing: 1)),
               const Spacer(),
@@ -224,16 +232,16 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
           ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: Image.network(_icon, width: 44, height: 44, fit: BoxFit.cover,
+                cacheWidth: 132,
                 errorBuilder: (_, _, _) =>
                     Icon(Icons.extension_outlined, color: AppColors.primary, size: 40)),
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Text(
-              'Add a CloudStream repo, then install only the plugins you want — '
-              'only those show up as providers. They run on your device '
-              '(Android only).',
-              style: TextStyle(color: AppColors.textHint, fontSize: 12.5, height: 1.35),
+              'ext.cloudstream_desc'.tr(),
+              style: const TextStyle(
+                  color: AppColors.textHint, fontSize: 12.5, height: 1.35),
             ),
           ),
         ],
@@ -254,7 +262,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
               style: const TextStyle(color: Colors.white),
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
-                labelText: 'Repo URL',
+                labelText: 'ext.repo_url'.tr(),
                 hintText: 'https://…/repo.json',
                 hintStyle: const TextStyle(color: AppColors.textHint),
                 filled: true,
@@ -267,7 +275,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
                     ? null
                     : IconButton(
                         icon: const Icon(Icons.clear, color: AppColors.textHint),
-                        tooltip: 'Clear',
+                        tooltip: 'general.clear'.tr(),
                         onPressed: _busy
                             ? null
                             : () => setState(() => _controller.clear()),
@@ -282,7 +290,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
                 style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
                 onPressed: _busy ? null : _add,
                 icon: const Icon(Icons.travel_explore),
-                label: const Text('Browse plugins'),
+                label: Text('ext.browse_plugins'.tr()),
               ),
             ),
           ],
@@ -325,12 +333,13 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: const Column(
+        child: Column(
           children: [
-            Icon(Icons.cloud_off_outlined, color: AppColors.textHint, size: 32),
-            SizedBox(height: 8),
-            Text('No sources yet',
-                style: TextStyle(color: AppColors.textHint)),
+            const Icon(Icons.cloud_off_outlined,
+                color: AppColors.textHint, size: 32),
+            const SizedBox(height: 8),
+            Text('ext.no_sources_yet'.tr(),
+                style: const TextStyle(color: AppColors.textHint)),
           ],
         ),
       );
@@ -348,6 +357,7 @@ class _CloudStreamSourcesPageState extends State<CloudStreamSourcesPage> {
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: Image.network(_icon, width: 34, height: 34, fit: BoxFit.cover,
+              cacheWidth: 102,
               errorBuilder: (_, _, _) =>
                   Icon(Icons.extension_outlined, color: AppColors.primary)),
         ),

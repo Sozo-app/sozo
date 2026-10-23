@@ -254,7 +254,7 @@ class _AuthTextFieldState extends State<AuthTextField> {
         ),
         prefixIcon: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.only(left: 14, right: 10),
+          padding: const EdgeInsetsDirectional.only(start: 14, end: 10),
           child: Icon(
             widget.icon,
             size: 20,
@@ -354,11 +354,8 @@ class AuthPrimaryButton extends StatelessWidget {
   final bool loading;
 
   @override
-  Widget build(BuildContext context) => AppPrimaryButton(
-    label: label,
-    onPressed: onPressed,
-    loading: loading,
-  );
+  Widget build(BuildContext context) =>
+      AppPrimaryButton(label: label, onPressed: onPressed, loading: loading);
 }
 
 class AuthDivider extends StatelessWidget {
@@ -396,8 +393,8 @@ class GoogleAuthButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 52,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 52),
       child: ElevatedButton.icon(
         onPressed: loading ? null : onPressed,
         style: ElevatedButton.styleFrom(
